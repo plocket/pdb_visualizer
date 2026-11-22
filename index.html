@@ -178,6 +178,11 @@
     <input type="range" id="fps-slider" min="1" max="60" value="24">
   </div>
 
+  <div class="row" id="smooth-row" style="display:none">
+    <label for="smooth-toggle">Smooth motion</label>
+    <input type="checkbox" id="smooth-toggle" checked>
+  </div>
+
   <div id="transport">
     <button id="play-btn" class="primary" style="display:none">Play</button>
     <input type="range" id="frame-slider" min="0" max="0" value="0">
@@ -456,18 +461,112 @@ const state = {
   data: null,       // parsePdb result
   bonds: null,      // flat index pairs
   frame: 0,
+  floatFrame: 0,    // continuous frame position while playing
+  smooth: true,     // interpolate between frames
+  smoothable: false,// all frames have the same atom count
+  pos: null,        // Float32Array xyz per atom, current display positions
   style: "ball-stick",
   scale: 1.0,
   showHydrogens: true,
   mesh: null,       // InstancedMesh for atoms
+  visAtom: null,    // Int32Array: instance index -> atom index
+  atomR: null,      // Float32Array: sphere radius per atom instance
   bonds3d: null,    // InstancedMesh for bond cylinders
+  bondPairs: null,  // Int32Array: visible bond atom index pairs
+  bondR: 0,         // bond cylinder radius
   spin: false,
   playing: false,
   fps: 24,
   lastFrameTime: 0,
+  acc: 0,
 };
 
 function frameAtoms() { return state.data.frames[state.frame]; }
+
+/* Scratch objects reused by the per-tick position update. */
+const _m4 = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+const _p = new THREE.Vector3();
+const _s = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+
+/* Copy one frame's coordinates into the position buffer. */
+function copyPositions(f) {
+  const frame = state.data.frames[f];
+  const pos = state.pos;
+  for (let i = 0, j = 0; i < frame.length; i++, j += 3) {
+    pos[j] = frame[i].x;
+    pos[j + 1] = frame[i].y;
+    pos[j + 2] = frame[i].z;
+  }
+}
+
+/* Blend frames f0 and f1 into the position buffer. Atoms that jump more
+   than 5 A between frames (periodic-boundary wraps) snap at the midpoint
+   instead of sweeping through the molecule. */
+const SNAP_DIST2 = 25;
+function interpolatePositions(f0, f1, t) {
+  const A = state.data.frames[f0], B = state.data.frames[f1];
+  const pos = state.pos;
+  for (let i = 0, j = 0; i < A.length; i++, j += 3) {
+    const a = A[i], b = B[i];
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    if (dx * dx + dy * dy + dz * dz > SNAP_DIST2) {
+      if (t < 0.5) { pos[j] = a.x; pos[j + 1] = a.y; pos[j + 2] = a.z; }
+      else { pos[j] = b.x; pos[j + 1] = b.y; pos[j + 2] = b.z; }
+    } else {
+      pos[j] = a.x + dx * t;
+      pos[j + 1] = a.y + dy * t;
+      pos[j + 2] = a.z + dz * t;
+    }
+  }
+}
+
+/* Rewrite all instance matrices from the position buffer.
+   Colors never change, so they are set once at build time. */
+function applyPositions() {
+  const pos = state.pos;
+  if (!pos) return;
+  if (state.mesh) {
+    const mesh = state.mesh;
+    const vis = state.visAtom, radii = state.atomR;
+    for (let k = 0; k < vis.length; k++) {
+      const o = vis[k] * 3;
+      const r = radii[k];
+      _m4.makeScale(r, r, r);
+      _m4.setPosition(pos[o], pos[o + 1], pos[o + 2]);
+      mesh.setMatrixAt(k, _m4);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+  if (state.bonds3d) {
+    const mesh = state.bonds3d;
+    const pairs = state.bondPairs;
+    const r = state.bondR;
+    for (let p = 0, inst = 0; p < pairs.length; p += 2, inst += 2) {
+      const a = pairs[p] * 3, b = pairs[p + 1] * 3;
+      const dx = pos[b] - pos[a], dy = pos[b + 1] - pos[a + 1], dz = pos[b + 2] - pos[a + 2];
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (len < 1e-6) {
+        _m4.makeScale(0.0001, 0.0001, 0.0001);
+        mesh.setMatrixAt(inst, _m4);
+        mesh.setMatrixAt(inst + 1, _m4);
+        continue;
+      }
+      _dir.set(dx / len, dy / len, dz / len);
+      _q.setFromUnitVectors(Y_AXIS, _dir);
+      const half = len / 2;
+      _s.set(r, half, r);
+      _p.set(pos[a] + _dir.x * half / 2, pos[a + 1] + _dir.y * half / 2, pos[a + 2] + _dir.z * half / 2);
+      _m4.compose(_p, _q, _s);
+      mesh.setMatrixAt(inst, _m4);
+      _p.set(pos[b] - _dir.x * half / 2, pos[b + 1] - _dir.y * half / 2, pos[b + 2] - _dir.z * half / 2);
+      _m4.compose(_p, _q, _s);
+      mesh.setMatrixAt(inst + 1, _m4);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+}
 
 function rebuildMolecule() {
   // clear previous objects
@@ -475,7 +574,13 @@ function rebuildMolecule() {
   if (state.bonds3d) { molGroup.remove(state.bonds3d); state.bonds3d.dispose(); state.bonds3d = null; }
 
   const atoms = frameAtoms();
-  const atomsVisible = state.showHydrogens ? atoms : atoms.filter(a => a.el !== "H");
+  const visAtom = [];
+  if (state.showHydrogens) {
+    for (let i = 0; i < atoms.length; i++) visAtom.push(i);
+  } else {
+    for (let i = 0; i < atoms.length; i++) if (atoms[i].el !== "H") visAtom.push(i);
+  }
+  state.visAtom = Int32Array.from(visAtom);
 
   const style = state.style;
   const showBonds = style !== "spacefill";
@@ -484,73 +589,49 @@ function rebuildMolecule() {
   /* ----- atoms (instanced spheres) ----- */
   if (style !== "lines") {
     const mat = new THREE.MeshLambertMaterial();
-    const mesh = new THREE.InstancedMesh(sphereGeo, mat, atomsVisible.length);
+    const mesh = new THREE.InstancedMesh(sphereGeo, mat, visAtom.length);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    const m4 = new THREE.Matrix4();
     const col = new THREE.Color();
-    atomsVisible.forEach((a, i) => {
-      const e = ELEMENTS[a.el] || UNKNOWN_EL;
-      const r = (style === "spacefill" ? e.vdw : e.cov * 1.25) * state.scale;
-      m4.makeScale(r, r, r);
-      m4.setPosition(a.x, a.y, a.z);
-      mesh.setMatrixAt(i, m4);
-      mesh.setColorAt(i, col.setHex(e.color));
-    });
-    mesh.instanceMatrix.needsUpdate = true;
+    const atomR = new Float32Array(visAtom.length);
+    for (let k = 0; k < visAtom.length; k++) {
+      const e = ELEMENTS[atoms[visAtom[k]].el] || UNKNOWN_EL;
+      atomR[k] = (style === "spacefill" ? e.vdw : e.cov * 1.25) * state.scale;
+      mesh.setColorAt(k, col.setHex(e.color));
+    }
+    state.atomR = atomR;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     state.mesh = mesh;
     molGroup.add(mesh);
+  } else {
+    state.mesh = null;
   }
 
   /* ----- bonds (instanced cylinders, two halves per bond) ----- */
+  state.bonds3d = null;
   if (showBonds && state.bonds && state.bonds.length) {
     const b = state.bonds;
-    // count visible bonds first so the instance buffer is exact
-    let nBonds = 0;
+    const pairs = [];
     for (let p = 0; p < b.length; p += 2) {
       const A = atoms[b[p]], B = atoms[b[p + 1]];
-      if (state.showHydrogens || (A.el !== "H" && B.el !== "H")) nBonds++;
+      if (!state.showHydrogens && (A.el === "H" || B.el === "H")) continue;
+      pairs.push(b[p], b[p + 1]);
     }
-    if (nBonds) {
-      const mesh = new THREE.InstancedMesh(cylGeo, new THREE.MeshLambertMaterial(), nBonds * 2);
+    if (pairs.length) {
+      state.bondPairs = Int32Array.from(pairs);
+      state.bondR = bondRadius;
+      const mesh = new THREE.InstancedMesh(cylGeo, new THREE.MeshLambertMaterial(), pairs.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      const m4 = new THREE.Matrix4();
-      const q = new THREE.Quaternion();
-      const dir = new THREE.Vector3();
-      const pos = new THREE.Vector3();
-      const scl = new THREE.Vector3();
       const col = new THREE.Color();
-      let inst = 0;
-      for (let p = 0; p < b.length; p += 2) {
-        const A = atoms[b[p]], B = atoms[b[p + 1]];
-        if (!state.showHydrogens && (A.el === "H" || B.el === "H")) continue;
-        dir.set(B.x - A.x, B.y - A.y, B.z - A.z);
-        const len = dir.length();
-        if (len < 1e-6) continue;
-        dir.divideScalar(len);
-        q.setFromUnitVectors(Y_AXIS, dir);
-        const half = len / 2;
-        scl.set(bondRadius, half, bondRadius);
-        // first half: from atom A to the midpoint
-        pos.set(A.x + dir.x * half / 2, A.y + dir.y * half / 2, A.z + dir.z * half / 2);
-        m4.compose(pos, q, scl);
-        mesh.setMatrixAt(inst, m4);
-        mesh.setColorAt(inst, col.setHex((ELEMENTS[A.el] || UNKNOWN_EL).color));
-        inst++;
-        // second half: from the midpoint to atom B
-        pos.set(B.x - dir.x * half / 2, B.y - dir.y * half / 2, B.z - dir.z * half / 2);
-        m4.compose(pos, q, scl);
-        mesh.setMatrixAt(inst, m4);
-        mesh.setColorAt(inst, col.setHex((ELEMENTS[B.el] || UNKNOWN_EL).color));
-        inst++;
+      for (let p = 0, inst = 0; p < pairs.length; p += 2, inst += 2) {
+        mesh.setColorAt(inst, col.setHex((ELEMENTS[atoms[pairs[p]].el] || UNKNOWN_EL).color));
+        mesh.setColorAt(inst + 1, col.setHex((ELEMENTS[atoms[pairs[p + 1]].el] || UNKNOWN_EL).color));
       }
-      mesh.count = inst;
-      mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       state.bonds3d = mesh;
       molGroup.add(mesh);
     }
   }
+  applyPositions();
 }
 
 function centerAndFit() {
@@ -587,11 +668,30 @@ function animate(t) {
     camera.lookAt(target);
   }
   if (state.playing && state.data && state.data.frames.length > 1) {
-    if (t - state.lastFrameTime >= 1000 / state.fps) {
-      state.lastFrameTime = t;
-      let f = state.frame + 1;
-      if (f >= state.data.frames.length) f = 0;
-      setFrame(f);
+    const n = state.data.frames.length;
+    const dt = Math.min(t - state.lastFrameTime, 100);
+    state.lastFrameTime = t;
+    if (state.smooth && state.smoothable) {
+      state.floatFrame += dt * state.fps / 1000;
+      if (state.floatFrame >= n - 1) state.floatFrame -= n - 1;
+      const i0 = Math.floor(state.floatFrame);
+      const f = state.floatFrame - i0;
+      interpolatePositions(i0, i0 + 1, f);
+      applyPositions();
+      if (i0 !== state.frame) {
+        state.frame = i0;
+        el("frame-slider").value = i0;
+        updateFrameLabel();
+      }
+    } else {
+      state.acc += dt;
+      const step = 1000 / state.fps;
+      if (state.acc >= step) {
+        state.acc = 0;
+        let f = state.frame + 1;
+        if (f >= n) f = 0;
+        setFrame(f);
+      }
     }
   }
   renderer.render(scene, camera);
@@ -665,7 +765,12 @@ async function loadFile(file) {
   state.data = data;
   state.bonds = computeBonds(data.frames[0]);
   state.frame = 0;
+  state.floatFrame = 0;
   state.playing = false;
+  state.acc = 0;
+  // smoothing needs identical atom counts in every frame
+  state.smoothable = data.frames.every(fr => fr.length === data.atomCount);
+  state.pos = new Float32Array(data.atomCount * 3);
   startScreen.style.display = "none";
   el("controls").style.display = "block";
 
@@ -700,6 +805,9 @@ async function loadFile(file) {
   const multi = nFrames > 1;
   el("anim-row").style.display = multi ? "flex" : "none";
   el("play-btn").style.display = multi ? "inline-block" : "none";
+  el("smooth-row").style.display = (multi && state.smoothable) ? "flex" : "none";
+  el("smooth-toggle").checked = true;
+  state.smooth = true;
   const slider = el("frame-slider");
   slider.max = nFrames - 1;
   slider.value = 0;
@@ -716,9 +824,11 @@ function updateFrameLabel() {
 
 function setFrame(f) {
   state.frame = f;
+  state.floatFrame = f;
+  copyPositions(f);
+  applyPositions();
   el("frame-slider").value = f;
   updateFrameLabel();
-  rebuildMolecule();
 }
 
 el("frame-slider").addEventListener("input", e => {
@@ -730,8 +840,12 @@ el("frame-slider").addEventListener("input", e => {
 el("play-btn").addEventListener("click", () => {
   state.playing = !state.playing;
   el("play-btn").textContent = state.playing ? "Pause" : "Play";
-  if (state.playing && state.frame >= state.data.frames.length - 1) {
-    setFrame(0);
+  if (state.playing) {
+    state.lastFrameTime = performance.now();
+    state.acc = 0;
+    if (state.frame >= state.data.frames.length - 1) {
+      setFrame(0);
+    }
   }
 });
 
@@ -756,6 +870,12 @@ el("spin-toggle").addEventListener("change", e => {
 
 el("fps-slider").addEventListener("input", e => {
   state.fps = parseInt(e.target.value, 10);
+});
+
+el("smooth-toggle").addEventListener("change", e => {
+  state.smooth = e.target.checked;
+  // resume from a whole frame when toggling
+  if (state.data) setFrame(state.frame);
 });
 </script>
 </body>
