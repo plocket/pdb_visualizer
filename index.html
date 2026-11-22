@@ -450,7 +450,8 @@ let target = new THREE.Vector3();
    Structure building
    ============================================================ */
 const sphereGeo = new THREE.SphereGeometry(1, 18, 12);
-const lineMat = new THREE.LineBasicMaterial({ vertexColors: true });
+const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 10, 1, true);
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const state = {
   data: null,       // parsePdb result
   bonds: null,      // flat index pairs
@@ -459,7 +460,7 @@ const state = {
   scale: 1.0,
   showHydrogens: true,
   mesh: null,       // InstancedMesh for atoms
-  lines: null,      // LineSegments for bonds
+  bonds3d: null,    // InstancedMesh for bond cylinders
   spin: false,
   playing: false,
   fps: 24,
@@ -470,18 +471,18 @@ function frameAtoms() { return state.data.frames[state.frame]; }
 
 function rebuildMolecule() {
   // clear previous objects
-  if (state.mesh)  { molGroup.remove(state.mesh);  state.mesh.geometry.dispose(); state.mesh.dispose(); state.mesh = null; }
-  if (state.lines) { molGroup.remove(state.lines); state.lines.geometry.dispose(); state.lines = null; }
+  if (state.mesh)  { molGroup.remove(state.mesh);  state.mesh.dispose(); state.mesh = null; }
+  if (state.bonds3d) { molGroup.remove(state.bonds3d); state.bonds3d.dispose(); state.bonds3d = null; }
 
   const atoms = frameAtoms();
   const atomsVisible = state.showHydrogens ? atoms : atoms.filter(a => a.el !== "H");
 
   const style = state.style;
-  const sphereScale = style === "spacefill" ? 1.0 : style === "ball-stick" ? 0.32 : 0.0;
   const showBonds = style !== "spacefill";
+  const bondRadius = (style === "ball-stick" ? 0.16 : 0.05) * (0.5 + 0.5 * state.scale);
 
   /* ----- atoms (instanced spheres) ----- */
-  if (sphereScale > 0) {
+  if (style !== "lines") {
     const mat = new THREE.MeshLambertMaterial();
     const mesh = new THREE.InstancedMesh(sphereGeo, mat, atomsVisible.length);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -501,27 +502,54 @@ function rebuildMolecule() {
     molGroup.add(mesh);
   }
 
-  /* ----- bonds (line segments) ----- */
+  /* ----- bonds (instanced cylinders, two halves per bond) ----- */
   if (showBonds && state.bonds && state.bonds.length) {
-    const positions = [];
-    const colors = [];
-    const c = new THREE.Color();
     const b = state.bonds;
+    // count visible bonds first so the instance buffer is exact
+    let nBonds = 0;
     for (let p = 0; p < b.length; p += 2) {
       const A = atoms[b[p]], B = atoms[b[p + 1]];
-      if (!state.showHydrogens && (A.el === "H" || B.el === "H")) continue;
-      const ea = ELEMENTS[A.el] || UNKNOWN_EL;
-      const eb = ELEMENTS[B.el] || UNKNOWN_EL;
-      positions.push(A.x, A.y, A.z, B.x, B.y, B.z);
-      // darker bond color so lines do not glare
-      c.setHex(ea.color).multiplyScalar(0.55); colors.push(c.r, c.g, c.b);
-      c.setHex(eb.color).multiplyScalar(0.55); colors.push(c.r, c.g, c.b);
+      if (state.showHydrogens || (A.el !== "H" && B.el !== "H")) nBonds++;
     }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-    state.lines = new THREE.LineSegments(geo, lineMat);
-    molGroup.add(state.lines);
+    if (nBonds) {
+      const mesh = new THREE.InstancedMesh(cylGeo, new THREE.MeshLambertMaterial(), nBonds * 2);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      const m4 = new THREE.Matrix4();
+      const q = new THREE.Quaternion();
+      const dir = new THREE.Vector3();
+      const pos = new THREE.Vector3();
+      const scl = new THREE.Vector3();
+      const col = new THREE.Color();
+      let inst = 0;
+      for (let p = 0; p < b.length; p += 2) {
+        const A = atoms[b[p]], B = atoms[b[p + 1]];
+        if (!state.showHydrogens && (A.el === "H" || B.el === "H")) continue;
+        dir.set(B.x - A.x, B.y - A.y, B.z - A.z);
+        const len = dir.length();
+        if (len < 1e-6) continue;
+        dir.divideScalar(len);
+        q.setFromUnitVectors(Y_AXIS, dir);
+        const half = len / 2;
+        scl.set(bondRadius, half, bondRadius);
+        // first half: from atom A to the midpoint
+        pos.set(A.x + dir.x * half / 2, A.y + dir.y * half / 2, A.z + dir.z * half / 2);
+        m4.compose(pos, q, scl);
+        mesh.setMatrixAt(inst, m4);
+        mesh.setColorAt(inst, col.setHex((ELEMENTS[A.el] || UNKNOWN_EL).color));
+        inst++;
+        // second half: from the midpoint to atom B
+        pos.set(B.x - dir.x * half / 2, B.y - dir.y * half / 2, B.z - dir.z * half / 2);
+        m4.compose(pos, q, scl);
+        mesh.setMatrixAt(inst, m4);
+        mesh.setColorAt(inst, col.setHex((ELEMENTS[B.el] || UNKNOWN_EL).color));
+        inst++;
+      }
+      mesh.count = inst;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      state.bonds3d = mesh;
+      molGroup.add(mesh);
+    }
   }
 }
 
