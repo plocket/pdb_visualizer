@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDB Visualizer</title>
+<style>
+  :root {
+    --bg: #10141a;
+    --panel: #1a2029;
+    --panel-edge: #2a3340;
+    --text: #d7dee8;
+    --text-dim: #8a97a8;
+    --accent: #4da3ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
+  }
+  #viewport { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  /* ---------- drop overlay ---------- */
+  #drop-overlay {
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(16, 20, 26, 0.55);
+    pointer-events: none;
+    opacity: 0; transition: opacity 0.15s;
+  }
+  #drop-overlay.active { opacity: 1; }
+  #drop-overlay .box {
+    border: 3px dashed var(--accent);
+    border-radius: 16px;
+    padding: 48px 72px;
+    background: rgba(26, 32, 41, 0.9);
+    font-size: 20px;
+    text-align: center;
+  }
+
+  /* ---------- start screen ---------- */
+  #start-screen {
+    position: fixed; inset: 0; z-index: 40;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #start-card {
+    width: min(560px, 90vw);
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 14px;
+    padding: 36px 40px;
+    text-align: center;
+  }
+  #start-card h1 { margin: 0 0 6px; font-size: 26px; }
+  #start-card p  { margin: 4px 0; color: var(--text-dim); }
+  #drop-zone {
+    margin: 24px 0 12px;
+    padding: 44px 20px;
+    border: 2px dashed var(--panel-edge);
+    border-radius: 12px;
+    color: var(--text-dim);
+    font-size: 15px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  #drop-zone.hover, #drop-zone:hover {
+    border-color: var(--accent);
+    background: rgba(77, 163, 255, 0.06);
+  }
+  #file-input { display: none; }
+  .hint { font-size: 12px; }
+
+  /* ---------- control panel ---------- */
+  #controls {
+    position: fixed; top: 12px; left: 12px; z-index: 20;
+    width: 260px;
+    background: rgba(26, 32, 41, 0.92);
+    border: 1px solid var(--panel-edge);
+    border-radius: 10px;
+    padding: 14px 16px;
+    user-select: none;
+  }
+  #controls h2 {
+    margin: 0 0 2px; font-size: 15px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #controls .sub { color: var(--text-dim); font-size: 11px; margin-bottom: 10px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .row label { flex: 0 0 78px; color: var(--text-dim); }
+  .row select, .row input[type="range"] { flex: 1; }
+  select {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--panel-edge); border-radius: 6px;
+    padding: 3px 6px;
+  }
+  input[type="range"] { accent-color: var(--accent); }
+  input[type="checkbox"] { accent-color: var(--accent); }
+  button {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--panel-edge); border-radius: 6px;
+    padding: 5px 12px; cursor: pointer; font: inherit;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.1); color: #fff; }
+  #frame-slider { width: 100%; }
+  #frame-label { color: var(--text-dim); font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+  #transport { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  #stats { color: var(--text-dim); font-size: 11px; margin-top: 10px; border-top: 1px solid var(--panel-edge); padding-top: 8px; }
+  #legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; }
+  #legend .chip { display: inline-flex; align-items: center; gap: 4px; }
+  #legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  #open-btn { margin-top: 10px; width: 100%; }
+  #error-box {
+    display: none;
+    margin-top: 10px; padding: 8px 10px;
+    background: rgba(255, 80, 80, 0.12);
+    border: 1px solid rgba(255, 80, 80, 0.5);
+    border-radius: 6px; color: #ff9c9c; font-size: 12px;
+  }
+  #fps-tag { color: var(--text-dim); font-size: 11px; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<div id="viewport"></div>
+
+<!-- drop overlay shown while a file is dragged over the window -->
+<div id="drop-overlay"><div class="box">Drop the PDB file to open it</div></div>
+
+<!-- start screen -->
+<div id="start-screen">
+  <div id="start-card">
+    <h1>PDB Visualizer</h1>
+    <p>Open a PDB file and show its structure in 3D.</p>
+    <p>Multi-model files (trajectories, NMR ensembles) can play as an animation.</p>
+    <div id="drop-zone">
+      Drag a PDB file here, or click to select a file
+    </div>
+    <p class="hint">The file stays on your computer. Nothing is uploaded.</p>
+  </div>
+</div>
+
+<!-- control panel -->
+<div id="controls" style="display:none">
+  <h2 id="mol-title">—</h2>
+  <div class="sub" id="mol-sub"></div>
+
+  <div class="row">
+    <label for="style-select">Style</label>
+    <select id="style-select">
+      <option value="ball-stick" selected>Ball and stick</option>
+      <option value="spacefill">Space fill</option>
+      <option value="lines">Lines</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label for="scale-slider">Sphere size</label>
+    <input type="range" id="scale-slider" min="10" max="150" value="100">
+  </div>
+
+  <div class="row">
+    <label for="hydrogen-toggle">Hydrogens</label>
+    <input type="checkbox" id="hydrogen-toggle" checked>
+  </div>
+
+  <div class="row">
+    <label for="spin-toggle">Auto spin</label>
+    <input type="checkbox" id="spin-toggle">
+  </div>
+
+  <div class="row" id="anim-row" style="display:none">
+    <label for="fps-slider">Speed (fps)</label>
+    <input type="range" id="fps-slider" min="1" max="60" value="24">
+  </div>
+
+  <div id="transport">
+    <button id="play-btn" class="primary" style="display:none">Play</button>
+    <input type="range" id="frame-slider" min="0" max="0" value="0">
+    <span id="frame-label">0 / 0</span>
+  </div>
+
+  <div id="stats"></div>
+  <div id="legend"></div>
+  <button id="open-btn">Open another file</button>
+  <div id="error-box"></div>
+  <div id="fps-tag"></div>
+</div>
+
+<input type="file" id="file-input" accept=".pdb,.ent,.txt">
+
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script>
+"use strict";
+
+/* ============================================================
+   Element data: CPK colors and radii (Angstrom)
+   ============================================================ */
+const ELEMENTS = {
+  H:  { color: 0xf0f0f0, cov: 0.31, vdw: 1.10 },
+  C:  { color: 0x909090, cov: 0.76, vdw: 1.70 },
+  N:  { color: 0x3050f8, cov: 0.71, vdw: 1.55 },
+  O:  { color: 0xff0d0d, cov: 0.66, vdw: 1.52 },
+  F:  { color: 0x90e050, cov: 0.57, vdw: 1.47 },
+  CL: { color: 0x1ff01f, cov: 1.02, vdw: 1.75 },
+  BR: { color: 0xa62929, cov: 1.20, vdw: 1.85 },
+  I:  { color: 0x940094, cov: 1.39, vdw: 1.98 },
+  P:  { color: 0xff8000, cov: 1.07, vdw: 1.80 },
+  S:  { color: 0xffff30, cov: 1.05, vdw: 1.80 },
+  NA: { color: 0xab5cf2, cov: 1.66, vdw: 2.27 },
+  K:  { color: 0x8f40d4, cov: 2.03, vdw: 2.75 },
+  MG: { color: 0x8aff00, cov: 1.41, vdw: 1.73 },
+  CA: { color: 0x3dff00, cov: 1.76, vdw: 2.31 },
+  FE: { color: 0xe06633, cov: 1.32, vdw: 2.04 },
+  ZN: { color: 0x7d80b0, cov: 1.22, vdw: 2.10 },
+  MN: { color: 0x9c7ac7, cov: 1.39, vdw: 2.05 },
+  CU: { color: 0xc88033, cov: 1.32, vdw: 2.38 },
+  SE: { color: 0xffa100, cov: 1.20, vdw: 1.90 },
+  LI: { color: 0xcc80ff, cov: 1.28, vdw: 1.82 },
+  B:  { color: 0xffb5b5, cov: 0.84, vdw: 1.92 },
+  SI: { color: 0xf0c8a0, cov: 1.11, vdw: 2.10 },
+  HE: { color: 0xd9ffff, cov: 0.28, vdw: 1.40 },
+  NE: { color: 0xb3e3f5, cov: 0.58, vdw: 1.54 },
+  AR: { color: 0x80d1e3, cov: 1.06, vdw: 1.88 },
+};
+const UNKNOWN_EL = { color: 0xff69b4, cov: 0.90, vdw: 1.80 };
+
+/* ============================================================
+   PDB parser
+   Returns { title, frames: [ [ {x,y,z,el,res}, ... ] ], counts }
+   ============================================================ */
+function parsePdb(text) {
+  const frames = [];
+  let current = null;      // atoms of the frame in progress
+  let inModel = false;
+  const titleLines = [];
+  let serial = 0;
+
+  const lines = text.split("\n");
+  for (const raw of lines) {
+    const rec = raw.slice(0, 6);
+
+    if (rec === "TITLE " || rec === "HEADER") {
+      if (raw.length > 10) titleLines.push(raw.slice(10).trim());
+      continue;
+    }
+    if (rec === "MODEL ") {
+      inModel = true;
+      current = [];
+      continue;
+    }
+    if (rec === "ENDMDL") {
+      if (current && current.length) frames.push(current);
+      current = null;
+      inModel = false;
+      continue;
+    }
+    if (rec === "ATOM  " || rec === "HETATM") {
+      if (!current) current = [];
+      const x = parseFloat(raw.slice(30, 38));
+      const y = parseFloat(raw.slice(38, 46));
+      const z = parseFloat(raw.slice(46, 54));
+      if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+      const name = raw.slice(12, 16).trim();
+      const res  = raw.slice(17, 20).trim();
+      let el = raw.slice(76, 78).trim().toUpperCase();
+      if (!el || !ELEMENTS[el]) el = guessElement(name);
+      current.push({
+        x, y, z, el, res,
+        het: rec === "HETATM",
+      });
+      serial++;
+    }
+  }
+  // file without MODEL records: one frame
+  if (current && current.length) frames.push(current);
+
+  if (!frames.length) {
+    throw new Error("No ATOM or HETATM records found in this file.");
+  }
+  return {
+    title: (titleLines.join(" ").replace(/\s+/g, " ").trim()) || "PDB structure",
+    frames,
+    atomCount: frames[0].length,
+  };
+}
+
+/* Guess the element from the atom name when columns 77-78 are empty. */
+function guessElement(name) {
+  const s = name.replace(/[^A-Za-z]/g, "").toUpperCase();
+  if (!s) return "C";
+  if (s.length >= 2 && ELEMENTS[s.slice(0, 2)]) {
+    // two-letter element (CL, NA, ...); avoid false hits such as "CA" alpha carbon
+    const two = s.slice(0, 2);
+    const one = s.slice(0, 1);
+    // If the first letter is a common organic element and the rest looks like
+    // a label (CA, CB, N, NE2 ...), prefer the one-letter element.
+    if ("CONSH".includes(one) && !/^(CL|NA|ZN|MG|NE)$/.test(two)) return one;
+    return two;
+  }
+  const one = s[0];
+  return ELEMENTS[one] ? one : "C";
+}
+
+/* ============================================================
+   Bond detection: grid based neighbor search on frame 0.
+   Bonds are computed once and reused for every frame.
+   ============================================================ */
+function computeBonds(atoms) {
+  const n = atoms.length;
+  const CELL = 2.2; // slightly more than the largest bond cutoff we use
+  const grid = new Map();
+  const key = (i, j, k) => i + 4096 * (j + 4096 * k);
+  for (let i = 0; i < n; i++) {
+    const a = atoms[i];
+    const ci = Math.floor(a.x / CELL), cj = Math.floor(a.y / CELL), ck = Math.floor(a.z / CELL);
+    const k = key(ci, cj, ck);
+    let arr = grid.get(k);
+    if (!arr) { arr = []; grid.set(k, arr); }
+    arr.push(i);
+  }
+  const bonds = [];
+  const seen = new Set();
+  for (let i = 0; i < n; i++) {
+    const a = atoms[i];
+    const ea = ELEMENTS[a.el] || UNKNOWN_EL;
+    const ci = Math.floor(a.x / CELL), cj = Math.floor(a.y / CELL), ck = Math.floor(a.z / CELL);
+    for (let di = -1; di <= 1; di++)
+      for (let dj = -1; dj <= 1; dj++)
+        for (let dk = -1; dk <= 1; dk++) {
+          const arr = grid.get(key(ci + di, cj + dj, ck + dk));
+          if (!arr) continue;
+          for (const j of arr) {
+            if (j <= i) continue;
+            const b = atoms[j];
+            const eb = ELEMENTS[b.el] || UNKNOWN_EL;
+            const cut = Math.min(ea.cov + eb.cov + 0.45, 1.9);
+            const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+            if (dx * dx + dy * dy + dz * dz > cut * cut) continue;
+            // skip hydrogen pairs and pairs where both atoms are far apart
+            if (a.el === "H" && b.el === "H") continue;
+            bonds.push(i, j);
+          }
+        }
+  }
+  return bonds; // flat list: pairs of atom indices
+}
+
+/* ============================================================
+   Three.js scene
+   ============================================================ */
+const viewport = document.getElementById("viewport");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+viewport.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x10141a);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100000);
+camera.position.set(0, 0, 60);
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.95);
+keyLight.position.set(1, 1, 1).normalize();
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0xffffff, 0.35);
+fillLight.position.set(-1, -0.5, -1).normalize();
+scene.add(fillLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+
+const molGroup = new THREE.Group();
+scene.add(molGroup);
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------- simple orbit controls (drag = rotate, wheel = zoom,
+   right drag or shift drag = pan) ---------- */
+let target = new THREE.Vector3();
+(function setupControls() {
+  const dom = renderer.domElement;
+  let dragging = false, button = 0, px = 0, py = 0;
+  dom.addEventListener("contextmenu", e => e.preventDefault());
+  dom.addEventListener("pointerdown", e => {
+    dragging = true; button = e.button; px = e.clientX; py = e.clientY;
+    dom.setPointerCapture(e.pointerId);
+  });
+  dom.addEventListener("pointerup", e => { dragging = false; });
+  dom.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    const dx = e.clientX - px, dy = e.clientY - py;
+    px = e.clientX; py = e.clientY;
+    if (button === 0 && !e.shiftKey) {
+      // rotate around target
+      const q = new THREE.Quaternion()
+        .setFromEuler(new THREE.Euler(dy * 0.006, dx * 0.006, 0, "XYZ"));
+      const offset = camera.position.clone().sub(target).applyQuaternion(q);
+      camera.position.copy(target).add(offset);
+      camera.lookAt(target);
+    } else {
+      // pan in the camera plane
+      const dist = camera.position.distanceTo(target);
+      const panScale = dist * 0.0016;
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+      target.addScaledVector(right, -dx * panScale);
+      target.addScaledVector(up, dy * panScale);
+      camera.position.addScaledVector(right, -dx * panScale);
+      camera.position.addScaledVector(up, dy * panScale);
+      camera.lookAt(target);
+    }
+  });
+  dom.addEventListener("wheel", e => {
+    e.preventDefault();
+    const factor = Math.pow(0.999, e.deltaY);
+    const offset = camera.position.clone().sub(target).multiplyScalar(factor);
+    camera.position.copy(target).add(offset);
+  }, { passive: false });
+  // touch support: one finger rotate, two finger pinch zoom
+  let pinchDist = 0;
+  dom.addEventListener("touchstart", e => {
+    if (e.touches.length === 2) {
+      pinchDist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY);
+    }
+  }, { passive: true });
+  dom.addEventListener("touchmove", e => {
+    if (e.touches.length === 2) {
+      const d = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY);
+      const factor = pinchDist / (d || 1);
+      const offset = camera.position.clone().sub(target).multiplyScalar(factor);
+      camera.position.copy(target).add(offset);
+      pinchDist = d;
+    }
+  }, { passive: true });
+})();
+
+/* ============================================================
+   Structure building
+   ============================================================ */
+const sphereGeo = new THREE.SphereGeometry(1, 18, 12);
+const lineMat = new THREE.LineBasicMaterial({ vertexColors: true });
+const state = {
+  data: null,       // parsePdb result
+  bonds: null,      // flat index pairs
+  frame: 0,
+  style: "ball-stick",
+  scale: 1.0,
+  showHydrogens: true,
+  mesh: null,       // InstancedMesh for atoms
+  lines: null,      // LineSegments for bonds
+  spin: false,
+  playing: false,
+  fps: 24,
+  lastFrameTime: 0,
+};
+
+function frameAtoms() { return state.data.frames[state.frame]; }
+
+function rebuildMolecule() {
+  // clear previous objects
+  if (state.mesh)  { molGroup.remove(state.mesh);  state.mesh.geometry.dispose(); state.mesh.dispose(); state.mesh = null; }
+  if (state.lines) { molGroup.remove(state.lines); state.lines.geometry.dispose(); state.lines = null; }
+
+  const atoms = frameAtoms();
+  const atomsVisible = state.showHydrogens ? atoms : atoms.filter(a => a.el !== "H");
+
+  const style = state.style;
+  const sphereScale = style === "spacefill" ? 1.0 : style === "ball-stick" ? 0.32 : 0.0;
+  const showBonds = style !== "spacefill";
+
+  /* ----- atoms (instanced spheres) ----- */
+  if (sphereScale > 0) {
+    const mat = new THREE.MeshLambertMaterial();
+    const mesh = new THREE.InstancedMesh(sphereGeo, mat, atomsVisible.length);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const m4 = new THREE.Matrix4();
+    const col = new THREE.Color();
+    atomsVisible.forEach((a, i) => {
+      const e = ELEMENTS[a.el] || UNKNOWN_EL;
+      const r = (style === "spacefill" ? e.vdw : e.cov * 1.25) * state.scale;
+      m4.makeScale(r, r, r);
+      m4.setPosition(a.x, a.y, a.z);
+      mesh.setMatrixAt(i, m4);
+      mesh.setColorAt(i, col.setHex(e.color));
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    state.mesh = mesh;
+    molGroup.add(mesh);
+  }
+
+  /* ----- bonds (line segments) ----- */
+  if (showBonds && state.bonds && state.bonds.length) {
+    const positions = [];
+    const colors = [];
+    const c = new THREE.Color();
+    const b = state.bonds;
+    for (let p = 0; p < b.length; p += 2) {
+      const A = atoms[b[p]], B = atoms[b[p + 1]];
+      if (!state.showHydrogens && (A.el === "H" || B.el === "H")) continue;
+      const ea = ELEMENTS[A.el] || UNKNOWN_EL;
+      const eb = ELEMENTS[B.el] || UNKNOWN_EL;
+      positions.push(A.x, A.y, A.z, B.x, B.y, B.z);
+      // darker bond color so lines do not glare
+      c.setHex(ea.color).multiplyScalar(0.55); colors.push(c.r, c.g, c.b);
+      c.setHex(eb.color).multiplyScalar(0.55); colors.push(c.r, c.g, c.b);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    state.lines = new THREE.LineSegments(geo, lineMat);
+    molGroup.add(state.lines);
+  }
+}
+
+function centerAndFit() {
+  const atoms = frameAtoms();
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const a of atoms) {
+    if (a.x < minX) minX = a.x; if (a.x > maxX) maxX = a.x;
+    if (a.y < minY) minY = a.y; if (a.y > maxY) maxY = a.y;
+    if (a.z < minZ) minZ = a.z; if (a.z > maxZ) maxZ = a.z;
+  }
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
+  // move frames so the structure center is at the origin
+  for (const frame of state.data.frames) {
+    for (const a of frame) { a.x -= cx; a.y -= cy; a.z -= cz; }
+  }
+  const radius = Math.max(maxX - minX, maxY - minY, maxZ - minZ) / 2 || 10;
+  target.set(0, 0, 0);
+  const dist = radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.1;
+  camera.position.set(dist * 0.4, dist * 0.3, dist);
+  camera.lookAt(target);
+}
+
+/* ============================================================
+   Animation loop
+   ============================================================ */
+function animate(t) {
+  requestAnimationFrame(animate);
+  if (state.spin) {
+    const offset = camera.position.clone().sub(target);
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.0035);
+    offset.applyQuaternion(q);
+    camera.position.copy(target).add(offset);
+    camera.lookAt(target);
+  }
+  if (state.playing && state.data && state.data.frames.length > 1) {
+    if (t - state.lastFrameTime >= 1000 / state.fps) {
+      state.lastFrameTime = t;
+      let f = state.frame + 1;
+      if (f >= state.data.frames.length) f = 0;
+      setFrame(f);
+    }
+  }
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(animate);
+
+/* ============================================================
+   UI wiring
+   ============================================================ */
+const el = id => document.getElementById(id);
+const startScreen = el("start-screen");
+const dropZone = el("drop-zone");
+const fileInput = el("file-input");
+const dropOverlay = el("drop-overlay");
+const errorBox = el("error-box");
+
+dropZone.addEventListener("click", () => fileInput.click());
+el("open-btn").addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => {
+  if (fileInput.files.length) loadFile(fileInput.files[0]);
+  fileInput.value = "";
+});
+
+// drag and drop anywhere on the page
+let dragDepth = 0;
+window.addEventListener("dragenter", e => {
+  e.preventDefault();
+  dragDepth++;
+  dropOverlay.classList.add("active");
+});
+window.addEventListener("dragleave", e => {
+  e.preventDefault();
+  dragDepth--;
+  if (dragDepth <= 0) { dragDepth = 0; dropOverlay.classList.remove("active"); }
+});
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropOverlay.classList.remove("active");
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) loadFile(file);
+});
+
+function showError(msg) {
+  errorBox.style.display = "block";
+  errorBox.textContent = msg;
+}
+
+async function loadFile(file) {
+  errorBox.style.display = "none";
+  if (!/\.(pdb|ent|txt)$/i.test(file.name)) {
+    showError("This file type is not supported. Use a PDB file (.pdb, .ent).");
+    return;
+  }
+  let text;
+  try {
+    text = await file.text();
+  } catch (err) {
+    showError("The file could not be read: " + err.message);
+    return;
+  }
+  let data;
+  try {
+    data = parsePdb(text);
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+
+  state.data = data;
+  state.bonds = computeBonds(data.frames[0]);
+  state.frame = 0;
+  state.playing = false;
+  startScreen.style.display = "none";
+  el("controls").style.display = "block";
+
+  // header info
+  el("mol-title").textContent = file.name;
+  el("mol-title").title = data.title;
+  const nFrames = data.frames.length;
+  el("mol-sub").textContent = data.title.slice(0, 90);
+
+  const residues = new Set();
+  for (const a of data.frames[0]) residues.add(a.res);
+  el("stats").textContent =
+    data.atomCount.toLocaleString() + " atoms · " +
+    residues.size + " residues · " +
+    state.bonds.length / 2 + " bonds · " +
+    nFrames + (nFrames === 1 ? " model" : " frames");
+
+  // legend: elements present
+  const present = [...new Set(data.frames[0].map(a => a.el))]
+    .filter(e => ELEMENTS[e])
+    .sort((a, b) => {
+      const order = ["C", "N", "O", "S", "P", "H"];
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+  el("legend").innerHTML = present.map(e => {
+    const c = "#" + (ELEMENTS[e].color).toString(16).padStart(6, "0");
+    return '<span class="chip"><span class="dot" style="background:' + c + '"></span>' + e + "</span>";
+  }).join("");
+
+  // animation controls
+  const multi = nFrames > 1;
+  el("anim-row").style.display = multi ? "flex" : "none";
+  el("play-btn").style.display = multi ? "inline-block" : "none";
+  const slider = el("frame-slider");
+  slider.max = nFrames - 1;
+  slider.value = 0;
+  updateFrameLabel();
+
+  centerAndFit();
+  rebuildMolecule();
+}
+
+function updateFrameLabel() {
+  const n = state.data ? state.data.frames.length : 0;
+  el("frame-label").textContent = (state.frame + 1) + " / " + n;
+}
+
+function setFrame(f) {
+  state.frame = f;
+  el("frame-slider").value = f;
+  updateFrameLabel();
+  rebuildMolecule();
+}
+
+el("frame-slider").addEventListener("input", e => {
+  state.playing = false;
+  el("play-btn").textContent = "Play";
+  setFrame(parseInt(e.target.value, 10));
+});
+
+el("play-btn").addEventListener("click", () => {
+  state.playing = !state.playing;
+  el("play-btn").textContent = state.playing ? "Pause" : "Play";
+  if (state.playing && state.frame >= state.data.frames.length - 1) {
+    setFrame(0);
+  }
+});
+
+el("style-select").addEventListener("change", e => {
+  state.style = e.target.value;
+  rebuildMolecule();
+});
+
+el("scale-slider").addEventListener("input", e => {
+  state.scale = parseInt(e.target.value, 10) / 100;
+  rebuildMolecule();
+});
+
+el("hydrogen-toggle").addEventListener("change", e => {
+  state.showHydrogens = e.target.checked;
+  rebuildMolecule();
+});
+
+el("spin-toggle").addEventListener("change", e => {
+  state.spin = e.target.checked;
+});
+
+el("fps-slider").addEventListener("input", e => {
+  state.fps = parseInt(e.target.value, 10);
+});
+</script>
+</body>
+</html>
