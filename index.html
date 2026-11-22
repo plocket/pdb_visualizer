@@ -465,6 +465,7 @@ const state = {
   smooth: true,     // interpolate between frames
   smoothable: false,// all frames have the same atom count
   pos: null,        // Float32Array xyz per atom, current display positions
+  bonded: null,     // Uint8Array: 1 if the atom takes part in a bond
   style: "ball-stick",
   scale: 1.0,
   showHydrogens: true,
@@ -501,23 +502,72 @@ function copyPositions(f) {
   }
 }
 
-/* Blend frames f0 and f1 into the position buffer. Atoms that jump more
-   than 5 A between frames (periodic-boundary wraps) snap at the midpoint
-   instead of sweeping through the molecule. */
+/* Blend frames f0 and f1 into the position buffer. Bonded atoms always
+   lerp: genuine conformational motion can cover several angstroms per
+   frame in sparsely sampled trajectories, and tearing bonds apart looks
+   worse than fast motion. Only unbonded atoms (ions, solvent far from
+   anything) snap across large image jumps. */
 const SNAP_DIST2 = 25;
 function interpolatePositions(f0, f1, t) {
   const A = state.data.frames[f0], B = state.data.frames[f1];
   const pos = state.pos;
+  const bonded = state.bonded;
   for (let i = 0, j = 0; i < A.length; i++, j += 3) {
-    const a = A[i], b = B[i];
-    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-    if (dx * dx + dy * dy + dz * dz > SNAP_DIST2) {
-      if (t < 0.5) { pos[j] = a.x; pos[j + 1] = a.y; pos[j + 2] = a.z; }
-      else { pos[j] = b.x; pos[j + 1] = b.y; pos[j + 2] = b.z; }
+    const dx = B[i].x - A[i].x, dy = B[i].y - A[i].y, dz = B[i].z - A[i].z;
+    if (!bonded[i] && dx * dx + dy * dy + dz * dz > SNAP_DIST2) {
+      if (t < 0.5) { pos[j] = A[i].x; pos[j + 1] = A[i].y; pos[j + 2] = A[i].z; }
+      else { pos[j] = B[i].x; pos[j + 1] = B[i].y; pos[j + 2] = B[i].z; }
     } else {
-      pos[j] = a.x + dx * t;
-      pos[j + 1] = a.y + dy * t;
-      pos[j + 2] = a.z + dz * t;
+      pos[j] = A[i].x + dx * t;
+      pos[j + 1] = A[i].y + dy * t;
+      pos[j + 2] = A[i].z + dz * t;
+    }
+  }
+}
+
+/* Periodic-boundary imaging can place bonded atoms in different box
+   images, tearing bonds apart in some frames. Walk the bond graph from
+   atom 0 in every frame; when a bond length suddenly grows compared to
+   the previous frame, move the later atom back next to its anchor using
+   the previous frame's bond vector. Frame-to-frame bond length change
+   from real motion stays well under the 2 A tear threshold. */
+function unwrapTrajectory() {
+  const frames = state.data.frames;
+  if (frames.length < 2 || !state.bonds.length) return;
+  const n = frames[0].length;
+  const adj = Array.from({ length: n }, () => []);
+  for (let p = 0; p < state.bonds.length; p += 2) {
+    const a = state.bonds[p], b = state.bonds[p + 1];
+    adj[a].push(b);
+    adj[b].push(a);
+  }
+  // BFS order with parent links (index-based queue, not shift())
+  const parent = new Int32Array(n).fill(-1);
+  const visited = new Uint8Array(n);
+  const order = new Int32Array(n);
+  let head = 0, tail = 0;
+  order[tail++] = 0; visited[0] = 1;
+  while (head < tail) {
+    const i = order[head++];
+    for (const j of adj[i]) {
+      if (!visited[j]) { visited[j] = 1; parent[j] = i; order[tail++] = j; }
+    }
+  }
+  for (let f = 1; f < frames.length; f++) {
+    const cur = frames[f], prev = frames[f - 1];
+    for (let oi = 0; oi < tail; oi++) {
+      const i = order[oi], p = parent[i];
+      if (p < 0) continue;
+      const dx = cur[i].x - cur[p].x, dy = cur[i].y - cur[p].y, dz = cur[i].z - cur[p].z;
+      const dCur = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const pdx = prev[i].x - prev[p].x, pdy = prev[i].y - prev[p].y, pdz = prev[i].z - prev[p].z;
+      const dPrev = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
+      if (dCur > dPrev + 2) {
+        // image jump: restore the previous bond vector from the anchor
+        cur[i].x = cur[p].x + pdx;
+        cur[i].y = cur[p].y + pdy;
+        cur[i].z = cur[p].z + pdz;
+      }
     }
   }
 }
@@ -764,6 +814,10 @@ async function loadFile(file) {
 
   state.data = data;
   state.bonds = computeBonds(data.frames[0]);
+  unwrapTrajectory();
+  // atoms with at least one bond always lerp; lone atoms may snap
+  state.bonded = new Uint8Array(data.atomCount);
+  for (let p = 0; p < state.bonds.length; p++) state.bonded[state.bonds[p]] = 1;
   state.frame = 0;
   state.floatFrame = 0;
   state.playing = false;
