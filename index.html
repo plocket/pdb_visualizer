@@ -111,6 +111,10 @@
   #transport { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
   #stats { color: var(--text-dim); font-size: 11px; margin-top: 10px; border-top: 1px solid var(--panel-edge); padding-top: 8px; }
   #legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; }
+  #keys-help { margin-top: 10px; border-top: 1px solid var(--panel-edge); padding-top: 8px; font-size: 11px; }
+  #keys-help .ktitle { color: var(--text-dim); margin-bottom: 4px; }
+  #keys-help .krow { display: flex; justify-content: space-between; gap: 8px; line-height: 1.7; }
+  #keys-help .kcap { font-family: Consolas, monospace; color: var(--accent); white-space: nowrap; }
   #legend .chip { display: inline-flex; align-items: center; gap: 4px; }
   #legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
   #open-btn { margin-top: 10px; width: 100%; }
@@ -191,6 +195,13 @@
 
   <div id="stats"></div>
   <div id="legend"></div>
+  <div id="keys-help">
+    <div class="ktitle">Keyboard</div>
+    <div class="krow"><span class="kcap">W A S D</span><span>Orbit the view</span></div>
+    <div class="krow"><span class="kcap">Arrow keys</span><span>Orbit the view</span></div>
+    <div class="krow"><span class="kcap">+ / -</span><span>Zoom in or out</span></div>
+    <div class="krow"><span class="kcap">I J K L</span><span>Pan the view</span></div>
+  </div>
   <button id="open-btn">Open another file</button>
   <div id="error-box"></div>
   <div id="fps-tag"></div>
@@ -451,6 +462,78 @@ let target = new THREE.Vector3();
   }, { passive: true });
 })();
 
+/* ---------- keyboard controls ----------
+   W A S D or arrow keys orbit, + and - zoom, I J K L pan. */
+const keys = new Set();
+const KEY_CODES = new Set([
+  "KeyW", "KeyA", "KeyS", "KeyD", "KeyI", "KeyJ", "KeyK", "KeyL",
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+  "Equal", "Minus", "NumpadAdd", "NumpadSubtract",
+]);
+const KEY_ORBIT_SPEED = 0.03;   // radians per tick
+const KEY_ZOOM_SPEED = 0.02;    // fraction per tick
+window.addEventListener("keydown", e => {
+  const t = e.target && e.target.tagName;
+  if (t === "INPUT" || t === "SELECT" || t === "TEXTAREA" || t === "BUTTON") return;
+  if (KEY_CODES.has(e.code)) { keys.add(e.code); e.preventDefault(); }
+});
+window.addEventListener("keyup", e => keys.delete(e.code));
+window.addEventListener("blur", () => keys.clear());
+
+function orbitCamera(dyaw, dpitch) {
+  const offset = camera.position.clone().sub(target);
+  if (dyaw) {
+    offset.applyQuaternion(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), dyaw));
+  }
+  if (dpitch) {
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+    const test = offset.clone().applyQuaternion(
+      new THREE.Quaternion().setFromAxisAngle(right, dpitch));
+    // keep the view above and below the molecule, do not flip over
+    const ang = Math.acos(THREE.MathUtils.clamp(test.y / test.length(), -1, 1));
+    if (ang > 0.05 && ang < Math.PI - 0.05) offset.copy(test);
+  }
+  camera.position.copy(target).add(offset);
+  camera.lookAt(target);
+}
+
+function zoomCamera(factor) {
+  const offset = camera.position.clone().sub(target).multiplyScalar(factor);
+  camera.position.copy(target).add(offset);
+}
+
+function panCamera(dx, dy) {
+  const s = camera.position.distanceTo(target) * 0.0016;
+  const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+  const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+  target.addScaledVector(right, dx * s);
+  target.addScaledVector(up, dy * s);
+  camera.position.addScaledVector(right, dx * s);
+  camera.position.addScaledVector(up, dy * s);
+  camera.lookAt(target);
+}
+
+function handleKeys() {
+  let dyaw = 0, dpitch = 0;
+  if (keys.has("KeyW") || keys.has("ArrowUp"))    dpitch -= KEY_ORBIT_SPEED;
+  if (keys.has("KeyS") || keys.has("ArrowDown"))  dpitch += KEY_ORBIT_SPEED;
+  if (keys.has("KeyA") || keys.has("ArrowLeft"))  dyaw -= KEY_ORBIT_SPEED;
+  if (keys.has("KeyD") || keys.has("ArrowRight")) dyaw += KEY_ORBIT_SPEED;
+  if (dyaw || dpitch) orbitCamera(dyaw, dpitch);
+
+  let zf = 1;
+  if (keys.has("Equal") || keys.has("NumpadAdd")) zf -= KEY_ZOOM_SPEED;
+  if (keys.has("Minus") || keys.has("NumpadSubtract")) zf += KEY_ZOOM_SPEED;
+  if (zf !== 1) zoomCamera(zf);
+
+  let px = 0, py = 0;
+  if (keys.has("KeyI")) py += 1;
+  if (keys.has("KeyK")) py -= 1;
+  if (keys.has("KeyJ")) px -= 1;
+  if (keys.has("KeyL")) px += 1;
+  if (px || py) panCamera(px, py);
+}
+
 /* ============================================================
    Structure building
    ============================================================ */
@@ -710,6 +793,7 @@ function centerAndFit() {
    ============================================================ */
 function animate(t) {
   requestAnimationFrame(animate);
+  if (keys.size) handleKeys();
   if (state.spin) {
     const offset = camera.position.clone().sub(target);
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.0035);
