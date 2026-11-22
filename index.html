@@ -125,6 +125,7 @@
     border: 1px solid rgba(255, 80, 80, 0.5);
     border-radius: 6px; color: #ff9c9c; font-size: 12px;
   }
+  #rec-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #e5484d; margin-right: 6px; vertical-align: 1px; }
   #fps-tag { color: var(--text-dim); font-size: 11px; margin-top: 6px; }
 </style>
 </head>
@@ -191,6 +192,12 @@
     <button id="play-btn" class="primary" style="display:none">Play</button>
     <input type="range" id="frame-slider" min="0" max="0" value="0">
     <span id="frame-label">0 / 0</span>
+  </div>
+
+  <div class="row" id="record-row" style="display:none">
+    <label for="record-btn">Video</label>
+    <button id="record-btn">Record</button>
+    <span id="rec-time" style="color:var(--text-dim);font-variant-numeric:tabular-nums"></span>
   </div>
 
   <div id="stats"></div>
@@ -951,6 +958,13 @@ async function loadFile(file) {
   slider.value = 0;
   updateFrameLabel();
 
+  // video recording
+  const recOK = pickVideoMime();
+  rec.fileName = file.name.replace(/\.(pdb|ent|txt)$/i, "");
+  el("record-row").style.display = recOK ? "flex" : "none";
+  el("rec-time").textContent = "";
+  el("record-btn").textContent = "Record";
+
   centerAndFit();
   copyPositions(0);
   rebuildMolecule();
@@ -1005,6 +1019,95 @@ el("hydrogen-toggle").addEventListener("change", e => {
 
 el("spin-toggle").addEventListener("change", e => {
   state.spin = e.target.checked;
+});
+
+/* ============================================================
+   Video recording: capture the canvas exactly as the user sees it.
+   MP4 (H.264) when the browser can record it, WebM otherwise.
+   ============================================================ */
+const rec = {
+  mr: null,        // MediaRecorder
+  chunks: [],
+  mime: "",
+  ext: "",
+  t0: 0,
+  timer: 0,        // interval id
+  fileName: "",
+};
+
+function pickVideoMime() {
+  const candidates = [
+    ["video/mp4;codecs=avc1.42E01E", "mp4"],
+    ["video/mp4;codecs=avc1", "mp4"],
+    ["video/mp4", "mp4"],
+    ["video/webm;codecs=vp9", "webm"],
+    ["video/webm;codecs=vp8", "webm"],
+    ["video/webm", "webm"],
+  ];
+  for (const [mime, ext] of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(mime)) return [mime, ext];
+  }
+  return null;
+}
+
+function recordTimerTick() {
+  const s = Math.floor((performance.now() - rec.t0) / 1000);
+  el("rec-time").textContent =
+    Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function startRecording() {
+  const picked = pickVideoMime();
+  if (!picked) {
+    showError("This browser cannot record video.");
+    return;
+  }
+  [rec.mime, rec.ext] = picked;
+  rec.chunks = [];
+  const stream = renderer.domElement.captureStream(60);
+  try {
+    rec.mr = new MediaRecorder(stream, { mimeType: rec.mime, videoBitsPerSecond: 12000000 });
+  } catch (err) {
+    showError("Recording could not start: " + err.message);
+    return;
+  }
+  rec.mr.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+  rec.mr.onstop = saveRecording;
+  rec.mr.start(250);
+  rec.t0 = performance.now();
+  rec.timer = setInterval(recordTimerTick, 500);
+  el("record-btn").innerHTML = '<span id="rec-dot"></span>Stop';
+  el("rec-time").textContent = "0:00";
+  recordTimerTick();
+}
+
+function stopRecording() {
+  if (!rec.mr) return;
+  rec.mr.stop();
+  clearInterval(rec.timer);
+  rec.mr = null;
+  el("record-btn").textContent = "Record";
+}
+
+function saveRecording() {
+  const blob = new Blob(rec.chunks, { type: rec.mime.split(";")[0] });
+  rec.chunks = [];
+  if (!blob.size) {
+    showError("The recording is empty. Record again.");
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = rec.fileName + "." + rec.ext;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  el("rec-time").textContent = "saved ." + rec.ext;
+}
+
+el("record-btn").addEventListener("click", () => {
+  if (rec.mr) stopRecording();
+  else startRecording();
 });
 
 el("fps-slider").addEventListener("input", e => {
