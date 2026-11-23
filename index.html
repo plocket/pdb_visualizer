@@ -240,6 +240,11 @@
     <input type="checkbox" id="lightsvis-toggle" checked>
   </div>
 
+  <div class="row">
+    <label for="outline-toggle">Outlines</label>
+    <input type="checkbox" id="outline-toggle" checked>
+  </div>
+
   <button id="copy-lights-btn">Copy light code</button>
 
   <div class="row" id="record-row" style="display:none">
@@ -455,11 +460,23 @@ function arcLight(hex, intensity, deg) {
   light.userData.deg = deg;
   return light;
 }
-const keyLight    = arcLight(0xffffff, 0.95,   0); // far right
-const fillLight   = arcLight(0x7788ff, 0.35,  45); // upper right
-const backLight   = arcLight(0xff8866, 0.25,  90); // top
-const topLight    = arcLight(0xaaffcc, 0.2,  135); // upper left
-const bottomLight = arcLight(0xffd4a8, 0.15, 180); // far left
+// const keyLight    = arcLight(0xffffff, 0.95,   0); // far right
+// const fillLight   = arcLight(0x7788ff, 0.35,  45); // upper right
+// const backLight   = arcLight(0xff8866, 0.25,  90); // top
+// const topLight    = arcLight(0xaaffcc, 0.2,  135); // upper left
+// const bottomLight = arcLight(0xffd4a8, 0.15, 180); // far left
+
+const keyLight    = arcLight(0xffffff, 0.30,    0);
+const fillLight   = arcLight(0x001eff, 0.20,   45);
+const backLight   = arcLight(0xff3700, 0.25,   90);
+const topLight    = arcLight(0x4dff94, 0.17,  135);
+const bottomLight = arcLight(0xfba651, 0.11,  180);
+/* Slightly shiny surface: a tight, faint highlight reads as sheen. A
+   broad highlight with the same strength reads as plastic, so the
+   shininess stays high while the specular color stays dark. */
+const ATOM_SPECULAR = 0x191919;
+const ATOM_SHININESS = 55;
+
 const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight];
 
 /* Bright markers that show where each light sits. MeshBasicMaterial
@@ -636,16 +653,54 @@ const tetraGeo   = new THREE.TetrahedronGeometry(1.35);
 /* Slightly shiny surface: a tight, faint highlight reads as sheen. A
    broad highlight with the same strength reads as plastic, so the
    shininess stays high while the specular color stays dark. */
-const ATOM_SPECULAR = 0x191919;
-const ATOM_SHININESS = 55;
+// const ATOM_SPECULAR = 0x191919;
+// const ATOM_SHININESS = 55;
 function atomMaterial(emissive) {
   const mat = new THREE.MeshPhongMaterial({
     specular: ATOM_SPECULAR,
     shininess: ATOM_SHININESS,
   });
+  addDepthShade(mat);
   if (emissive) mat.emissive.copy(emissive);
   return mat;
 }
+/* Depth shading: fragments farther from the camera than the model
+   center get darker, computed in the shader, so no fog object and no
+   per-atom CPU work is needed. The strength scales with the camera
+   distance, so zooming keeps the same relative depth cue. */
+const DEPTH_DARKEN = 0.5;   // how much darker the deepest surfaces get
+const depthShaders = [];
+function addDepthShade(mat) {
+  mat.onBeforeCompile = shader => {
+    shader.uniforms.uRefDist = { value: 0 };
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying float vViewZ;")
+      .replace("#include <fog_vertex>", "#include <fog_vertex>\nvViewZ = -mvPosition.z;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;")
+      .replace("gl_FragColor = vec4( outgoingLight, diffuseColor.a );",
+        "float depthShade = clamp(1.0 - " + DEPTH_DARKEN +
+        " * (vViewZ - uRefDist) / (uRefDist + 1.0), 0.35, 1.0);\n" +
+        "gl_FragColor = vec4( outgoingLight * depthShade, diffuseColor.a );");
+    depthShaders.push(shader);
+  };
+}
+/* Inverted hull for outlines: the same geometry slightly inflated,
+   drawn back-face only, so it shows as a rim around the silhouette.
+   A nearer atom's depth hides the rim of atoms behind it, which
+   separates overlapping same-shade atoms. */
+const HULL_INFLATE = 1.07;
+const hullGeoCache = new Map();
+function hullGeoFor(geo) {
+  let hull = hullGeoCache.get(geo);
+  if (!hull) {
+    hull = geo.clone();
+    hull.scale(HULL_INFLATE, HULL_INFLATE, HULL_INFLATE);
+    hullGeoCache.set(geo, hull);
+  }
+  return hull;
+}
+const hullMaterial = new THREE.MeshBasicMaterial({ color: 0x0a0e14, side: THREE.BackSide });
 const state = {
   data: null,       // parsePdb result
   bonds: null,      // flat index pairs
@@ -658,6 +713,7 @@ const state = {
   shapeMode: false, // draw different shapes per element
   meshes: [],       // one InstancedMesh per shape, with its atom indices
   showLights: true, // draw markers at the light positions
+  showOutlines: true, // draw a dark rim around each atom
   style: "ball-stick",
   scale: .7,
   showHydrogens: true,
@@ -771,6 +827,7 @@ function applyPositions() {
   if (!pos) return;
   for (const group of state.meshes) {
     const mesh = group.mesh;
+    const hull = group.hull;
     const vis = group.vis, radii = group.radii;
     for (let k = 0; k < vis.length; k++) {
       const o = vis[k] * 3;
@@ -778,8 +835,10 @@ function applyPositions() {
       _m4.makeScale(r, r, r);
       _m4.setPosition(pos[o], pos[o + 1], pos[o + 2]);
       mesh.setMatrixAt(k, _m4);
+      if (hull) hull.setMatrixAt(k, _m4);
     }
     mesh.instanceMatrix.needsUpdate = true;
+    if (hull) hull.instanceMatrix.needsUpdate = true;
   }
   if (state.bonds3d) {
     const mesh = state.bonds3d;
@@ -813,7 +872,10 @@ function applyPositions() {
 function rebuildMolecule() {
   // clear previous objects
   if (state.bonds3d) { molGroup.remove(state.bonds3d); state.bonds3d.dispose(); state.bonds3d = null; }
-  for (const group of state.meshes) { molGroup.remove(group.mesh); group.mesh.dispose(); }
+  for (const group of state.meshes) {
+    molGroup.remove(group.mesh); group.mesh.dispose();
+    if (group.hull) { molGroup.remove(group.hull); group.hull.dispose(); }
+  }
   state.meshes = [];
 
   const atoms = frameAtoms();
@@ -860,7 +922,13 @@ function rebuildMolecule() {
         mesh.setColorAt(k, col.setHex(e.color));
       }
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      state.meshes.push({ mesh, vis: Int32Array.from(idxs), radii });
+      let hull = null;
+      if (state.showOutlines) {
+        hull = new THREE.InstancedMesh(hullGeoFor(geoFor(elName)), hullMaterial, idxs.length);
+        hull.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        molGroup.add(hull);
+      }
+      state.meshes.push({ mesh, vis: Int32Array.from(idxs), radii, hull });
       molGroup.add(mesh);
     }
   }
@@ -923,6 +991,7 @@ function animate(t) {
   // keep the lights on their arc on the viewer's side, and show markers
   markerGroup.visible = state.showLights;
   const camDist = camera.position.distanceTo(target);
+  for (const shader of depthShaders) shader.uniforms.uRefDist.value = camDist;
   for (const light of viewLights) {
     _p.copy(light.userData.offset).applyQuaternion(camera.quaternion);
     const dir = _p.normalize();
@@ -1162,6 +1231,11 @@ el("shape-toggle").addEventListener("change", e => {
 
 el("lightsvis-toggle").addEventListener("change", e => {
   state.showLights = e.target.checked;
+});
+
+el("outline-toggle").addEventListener("change", e => {
+  state.showOutlines = e.target.checked;
+  rebuildMolecule();
 });
 
 /* Build the light block with the current colors and brightness, ready
