@@ -174,6 +174,11 @@
   </div>
 
   <div class="row">
+    <label for="shape-toggle">Shape by element</label>
+    <input type="checkbox" id="shape-toggle">
+  </div>
+
+  <div class="row">
     <label for="spin-toggle">Auto spin</label>
     <input type="checkbox" id="spin-toggle">
   </div>
@@ -549,6 +554,11 @@ function handleKeys() {
 const sphereGeo = new THREE.SphereGeometry(1, 18, 12);
 const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 10, 1, true);
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
+/* unit-sized shapes for the "shape by element" view mode */
+const pyramidGeo = new THREE.ConeGeometry(1.15, 1.5, 4);
+const cubeGeo    = new THREE.BoxGeometry(1.35, 1.35, 1.35);
+const octaGeo    = new THREE.OctahedronGeometry(1.25);
+const tetraGeo   = new THREE.TetrahedronGeometry(1.35);
 const state = {
   data: null,       // parsePdb result
   bonds: null,      // flat index pairs
@@ -558,6 +568,8 @@ const state = {
   smoothable: false,// all frames have the same atom count
   pos: null,        // Float32Array xyz per atom, current display positions
   bonded: null,     // Uint8Array: 1 if the atom takes part in a bond
+  shapeMode: false, // draw different shapes per element
+  meshes: [],       // one InstancedMesh per shape, with its atom indices
   style: "ball-stick",
   scale: .7,
   showHydrogens: true,
@@ -669,9 +681,9 @@ function unwrapTrajectory() {
 function applyPositions() {
   const pos = state.pos;
   if (!pos) return;
-  if (state.mesh) {
-    const mesh = state.mesh;
-    const vis = state.visAtom, radii = state.atomR;
+  for (const group of state.meshes) {
+    const mesh = group.mesh;
+    const vis = group.vis, radii = group.radii;
     for (let k = 0; k < vis.length; k++) {
       const o = vis[k] * 3;
       const r = radii[k];
@@ -712,8 +724,9 @@ function applyPositions() {
 
 function rebuildMolecule() {
   // clear previous objects
-  if (state.mesh)  { molGroup.remove(state.mesh);  state.mesh.dispose(); state.mesh = null; }
   if (state.bonds3d) { molGroup.remove(state.bonds3d); state.bonds3d.dispose(); state.bonds3d = null; }
+  for (const group of state.meshes) { molGroup.remove(group.mesh); group.mesh.dispose(); }
+  state.meshes = [];
 
   const atoms = frameAtoms();
   const visAtom = [];
@@ -728,24 +741,37 @@ function rebuildMolecule() {
   const showBonds = style !== "spacefill";
   const bondRadius = (style === "ball-stick" ? 0.16 : 0.05) * (0.5 + 0.5 * state.scale);
 
-  /* ----- atoms (instanced spheres) ----- */
+  /* ----- atoms (instanced meshes; one per shape in shape mode) ----- */
   if (style !== "lines") {
-    const mat = new THREE.MeshLambertMaterial();
-    const mesh = new THREE.InstancedMesh(sphereGeo, mat, visAtom.length);
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    const col = new THREE.Color();
-    const atomR = new Float32Array(visAtom.length);
-    for (let k = 0; k < visAtom.length; k++) {
-      const e = ELEMENTS[atoms[visAtom[k]].el] || UNKNOWN_EL;
-      atomR[k] = (style === "spacefill" ? e.vdw : e.cov * 1) * state.scale;
-      mesh.setColorAt(k, col.setHex(e.color));
+    // group the visible atoms by geometry
+    const geoFor = el => {
+      if (!state.shapeMode) return sphereGeo;
+      if (el === "N" || el === "P") return pyramidGeo;
+      if (el === "O") return cubeGeo;
+      if (el === "S") return octaGeo;
+      if (el === "F" || el === "CL" || el === "BR" || el === "I") return tetraGeo;
+      return sphereGeo; // H and everything else
+    };
+    const groups = new Map(); // geometry -> [atom index, ...]
+    for (const i of visAtom) {
+      const g = geoFor(atoms[i].el);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(i);
     }
-    state.atomR = atomR;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    state.mesh = mesh;
-    molGroup.add(mesh);
-  } else {
-    state.mesh = null;
+    const col = new THREE.Color();
+    for (const [geo, idxs] of groups) {
+      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial(), idxs.length);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      const radii = new Float32Array(idxs.length);
+      for (let k = 0; k < idxs.length; k++) {
+        const e = ELEMENTS[atoms[idxs[k]].el] || UNKNOWN_EL;
+        radii[k] = (style === "spacefill" ? e.vdw : e.cov * 1) * state.scale;
+        mesh.setColorAt(k, col.setHex(e.color));
+      }
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      state.meshes.push({ mesh, vis: Int32Array.from(idxs), radii });
+      molGroup.add(mesh);
+    }
   }
 
   /* ----- bonds (instanced cylinders, two halves per bond) ----- */
@@ -1021,6 +1047,11 @@ el("hydrogen-toggle").addEventListener("change", e => {
 
 el("spin-toggle").addEventListener("change", e => {
   state.spin = e.target.checked;
+});
+
+el("shape-toggle").addEventListener("change", e => {
+  state.shapeMode = e.target.checked;
+  rebuildMolecule();
 });
 
 /* ============================================================
