@@ -580,23 +580,20 @@ let target = new THREE.Vector3();
     const dx = e.clientX - px, dy = e.clientY - py;
     px = e.clientX; py = e.clientY;
     if (button === 0 && !e.shiftKey) {
-      // rotate around target
-      const q = new THREE.Quaternion()
-        .setFromEuler(new THREE.Euler(dy * 0.006, dx * 0.006, 0, "XYZ"));
-      const offset = camera.position.clone().sub(target).applyQuaternion(q);
-      camera.position.copy(target).add(offset);
-      camera.lookAt(target);
+      // trackball orbit: screen-relative rotation around the camera's
+      // own axes, so drag directions stay meaningful at any orientation
+      orbitByAngles(dx * 0.006, dy * 0.006);
     } else {
       // pan in the camera plane
-      const dist = camera.position.distanceTo(target);
-      const panScale = dist * 0.0016;
-      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
-      const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+      const panScale = camera.position.distanceTo(target) * 0.0016;
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(viewQuat);
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(viewQuat);
       target.addScaledVector(right, -dx * panScale);
       target.addScaledVector(up, dy * panScale);
       camera.position.addScaledVector(right, -dx * panScale);
       camera.position.addScaledVector(up, dy * panScale);
       camera.lookAt(target);
+      syncViewQuat();
     }
   });
   dom.addEventListener("wheel", e => {
@@ -645,21 +642,31 @@ window.addEventListener("keydown", e => {
 window.addEventListener("keyup", e => keys.delete(e.code));
 window.addEventListener("blur", () => keys.clear());
 
+/* ---------- trackball orbit: rotate around the camera's own right
+   and up axes, like walking on the surface of a ball around the
+   model. No poles, no carousel effect; the horizon may tilt, which
+   is inherent to ball-walking. viewQuat holds the camera orientation. */
+const viewQuat = new THREE.Quaternion();
+function syncViewQuat() {
+  viewQuat.copy(camera.quaternion);
+}
+function applyView() {
+  const dist = camera.position.distanceTo(target);
+  camera.position.copy(target)
+    .add(new THREE.Vector3(0, 0, dist).applyQuaternion(viewQuat));
+  camera.quaternion.copy(viewQuat);
+}
+function orbitByAngles(yaw, pitch) {
+  if (yaw) viewQuat.multiply(
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw));
+  if (pitch) viewQuat.multiply(
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch));
+  viewQuat.normalize();
+  applyView();
+}
+
 function orbitCamera(dyaw, dpitch) {
-  const offset = camera.position.clone().sub(target);
-  if (dyaw) {
-    offset.applyQuaternion(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), dyaw));
-  }
-  if (dpitch) {
-    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
-    const test = offset.clone().applyQuaternion(
-      new THREE.Quaternion().setFromAxisAngle(right, dpitch));
-    // keep the view above and below the molecule, do not flip over
-    const ang = Math.acos(THREE.MathUtils.clamp(test.y / test.length(), -1, 1));
-    if (ang > 0.05 && ang < Math.PI - 0.05) offset.copy(test);
-  }
-  camera.position.copy(target).add(offset);
-  camera.lookAt(target);
+  orbitByAngles(dyaw, dpitch);
 }
 
 function zoomCamera(factor) {
@@ -1067,6 +1074,7 @@ function centerAndFit() {
   state.homeDir = new THREE.Vector3(0.4, 0.3, 1).normalize();
   camera.position.set(dist * 0.4, dist * 0.3, dist);
   camera.lookAt(target);
+  syncViewQuat();
 }
 
 /* ============================================================
@@ -1121,11 +1129,10 @@ function animate(t) {
     }
   }
   if (state.spin) {
-    const offset = camera.position.clone().sub(target);
-    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.0035);
-    offset.applyQuaternion(q);
-    camera.position.copy(target).add(offset);
-    camera.lookAt(target);
+    // turntable spin around the world up axis, horizon stays level
+    viewQuat.premultiply(
+      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.0035));
+    applyView();
   }
   if (state.playing && state.data && state.data.frames.length > 1) {
     const n = state.data.frames.length;
@@ -1449,6 +1456,7 @@ el("reset-zoom-btn").addEventListener("click", () => {
   const { dir } = cameraDirAndDist();
   camera.position.copy(target).addScaledVector(dir, state.fitDist);
   camera.lookAt(target);
+  syncViewQuat();
 });
 
 el("reset-pan-btn").addEventListener("click", () => {
@@ -1456,6 +1464,7 @@ el("reset-pan-btn").addEventListener("click", () => {
   target.set(0, 0, 0);
   camera.position.copy(target).addScaledVector(dir, dist);
   camera.lookAt(target);
+  syncViewQuat();
 });
 
 el("reset-orbit-btn").addEventListener("click", () => {
@@ -1463,6 +1472,7 @@ el("reset-orbit-btn").addEventListener("click", () => {
   const { dist } = cameraDirAndDist();
   camera.position.copy(target).addScaledVector(state.homeDir, dist);
   camera.lookAt(target);
+  syncViewQuat();
 });
 
 function fallbackCopy(text, done) {
