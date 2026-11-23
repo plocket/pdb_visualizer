@@ -165,7 +165,7 @@
 
   <div class="row">
     <label for="scale-slider">Sphere size</label>
-    <input type="range" id="scale-slider" min="10" max="150" value="100">
+    <input type="range" id="scale-slider" min="10" max="150" value="70">
   </div>
 
   <div class="row">
@@ -443,7 +443,7 @@ let target = new THREE.Vector3();
   });
   dom.addEventListener("wheel", e => {
     e.preventDefault();
-    const factor = Math.pow(0.999, e.deltaY);
+    const factor = Math.pow(1.01, e.deltaY);
     const offset = camera.position.clone().sub(target).multiplyScalar(factor);
     camera.position.copy(target).add(offset);
   }, { passive: false });
@@ -557,7 +557,7 @@ const state = {
   pos: null,        // Float32Array xyz per atom, current display positions
   bonded: null,     // Uint8Array: 1 if the atom takes part in a bond
   style: "ball-stick",
-  scale: 1.0,
+  scale: .7,
   showHydrogens: true,
   mesh: null,       // InstancedMesh for atoms
   visAtom: null,    // Int32Array: instance index -> atom index
@@ -735,7 +735,7 @@ function rebuildMolecule() {
     const atomR = new Float32Array(visAtom.length);
     for (let k = 0; k < visAtom.length; k++) {
       const e = ELEMENTS[atoms[visAtom[k]].el] || UNKNOWN_EL;
-      atomR[k] = (style === "spacefill" ? e.vdw : e.cov * 1.25) * state.scale;
+      atomR[k] = (style === "spacefill" ? e.vdw : e.cov * 1) * state.scale;
       mesh.setColorAt(k, col.setHex(e.color));
     }
     state.atomR = atomR;
