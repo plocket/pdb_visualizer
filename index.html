@@ -118,6 +118,9 @@
   #stats { color: var(--text-dim); font-size: 11px; margin-top: 10px; border-top: 1px solid var(--panel-edge); padding-top: 8px; }
   #legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; }
   #keys-help { margin-top: 10px; border-top: 1px solid var(--panel-edge); padding-top: 8px; font-size: 11px; }
+  details#depth-menu { margin: 8px 0; border: 1px solid var(--panel-edge); border-radius: 6px; padding: 4px 8px; }
+  details#depth-menu summary { cursor: pointer; color: var(--text-dim); user-select: none; }
+  details#depth-menu .row { margin: 6px 0; }
   #keys-help .ktitle { color: var(--text-dim); margin-bottom: 4px; }
   #keys-help .krow { display: flex; justify-content: space-between; gap: 8px; line-height: 1.7; }
   #keys-help .kcap { font-family: Consolas, monospace; color: var(--accent); white-space: nowrap; }
@@ -235,15 +238,25 @@
     <span id="frame-label">0 / 0</span>
   </div>
 
-  <div class="row">
-    <label for="depth-slider">Depth shading</label>
-    <input type="range" id="depth-slider" min="0" max="500" value="200">
-  </div>
-
-  <div class="row">
-    <label for="curve-slider">Depth curve</label>
-    <input type="range" id="curve-slider" min="0.001" max="5" step="0.001" value="0.5">
-  </div>
+  <details id="depth-menu">
+    <summary>Depth shading</summary>
+    <div class="row">
+      <label for="depth-slider">Darkening</label>
+      <input type="range" id="depth-slider" min="0" max="500" value="200">
+    </div>
+    <div class="row">
+      <label for="curve-slider">Softness</label>
+      <input type="range" id="curve-slider" min="0.001" max="5" step="0.001" value="0.5">
+    </div>
+    <div class="row">
+      <label for="plateau-slider">Plateau</label>
+      <input type="range" id="plateau-slider" min="0" max="3" step="0.01" value="0.5">
+    </div>
+    <div class="row">
+      <label for="floor-slider">Floor</label>
+      <input type="range" id="floor-slider" min="0" max="90" step="1" value="30">
+    </div>
+  </details>
 
   <div class="row">
     <label for="lightsvis-toggle">Show light positions</label>
@@ -688,12 +701,21 @@ window.DEPTH_DARKEN = DEPTH_DARKEN;   // live copy, moved by the slider
    high values fade gradually. */
 const DEPTH_SOFT = 0.5;
 window.DEPTH_SOFT = DEPTH_SOFT;       // live copy, moved by the slider
+/* Plateau: depth in diameters that keeps full brightness before the
+   progression starts. 0.5 is the front hemisphere of the closest atom. */
+const DEPTH_PLATEAU = 0.5;
+window.DEPTH_PLATEAU = DEPTH_PLATEAU; // live copy, moved by the slider
+/* Floor: brightness the deepest surfaces bottom out at. */
+const DEPTH_FLOOR = 0.3;
+window.DEPTH_FLOOR = DEPTH_FLOOR;     // live copy, moved by the slider
 const depthShaders = [];
 function addDepthShade(mat) {
   mat.onBeforeCompile = shader => {
     shader.uniforms.uRefDist = { value: 0 };
     shader.uniforms.uDarken = { value: window.DEPTH_DARKEN };
     shader.uniforms.uSoft = { value: window.DEPTH_SOFT };
+    shader.uniforms.uPlateau = { value: window.DEPTH_PLATEAU };
+    shader.uniforms.uFloor = { value: window.DEPTH_FLOOR };
     shader.uniforms.uNear = { value: 0 };
     shader.uniforms.uDiam = { value: 1 };
     shader.uniforms.uSpan = { value: 8 };
@@ -701,12 +723,12 @@ function addDepthShade(mat) {
       .replace("#include <common>", "#include <common>\nvarying float vViewZ;")
       .replace("#include <fog_vertex>", "#include <fog_vertex>\nvViewZ = -mvPosition.z;");
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;\nuniform float uDarken;\nuniform float uSoft;\nuniform float uNear;\nuniform float uDiam;\nuniform float uSpan;")
+      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;\nuniform float uDarken;\nuniform float uSoft;\nuniform float uPlateau;\nuniform float uFloor;\nuniform float uNear;\nuniform float uDiam;\nuniform float uSpan;")
       .replace("gl_FragColor = vec4( outgoingLight, diffuseColor.a );",
         "float t = max(0.0, vViewZ - uNear) / uDiam;\n" +
-        "float x = max(0.0, t - 0.5);\n" +
+        "float x = max(0.0, t - uPlateau);\n" +
         "float d = log(1.0 + x / uSoft) / log(1.0 + uSpan / uSoft);\n" +
-        "float depthShade = clamp(1.0 - uDarken * min(d, 1.0), 0.3, 1.0);\n" +
+        "float depthShade = clamp(1.0 - uDarken * min(d, 1.0), uFloor, 1.0);\n" +
         "gl_FragColor = vec4( outgoingLight * depthShade, diffuseColor.a );");
     depthShaders.push(shader);
   };
@@ -1309,6 +1331,16 @@ el("curve-slider").addEventListener("input", e => {
   for (const shader of depthShaders) shader.uniforms.uSoft.value = window.DEPTH_SOFT;
 });
 
+el("plateau-slider").addEventListener("input", e => {
+  window.DEPTH_PLATEAU = parseFloat(e.target.value);
+  for (const shader of depthShaders) shader.uniforms.uPlateau.value = window.DEPTH_PLATEAU;
+});
+
+el("floor-slider").addEventListener("input", e => {
+  window.DEPTH_FLOOR = parseInt(e.target.value, 10) / 100;
+  for (const shader of depthShaders) shader.uniforms.uFloor.value = window.DEPTH_FLOOR;
+});
+
 el("outline-toggle").addEventListener("change", e => {
   state.showOutlines = e.target.checked;
   rebuildMolecule();
@@ -1329,6 +1361,8 @@ function lightCode() {
     "const ATOM_SHININESS = " + ATOM_SHININESS + ";\n" +
     "const DEPTH_DARKEN = " + window.DEPTH_DARKEN + ";\n" +
     "const DEPTH_SOFT = " + window.DEPTH_SOFT + ";\n" +
+    "const DEPTH_PLATEAU = " + window.DEPTH_PLATEAU + ";\n" +
+    "const DEPTH_FLOOR = " + window.DEPTH_FLOOR + ";\n" +
     "const HULL_INFLATE = " + HULL_INFLATE + ";";
 }
 
@@ -1384,6 +1418,8 @@ function syncLightUI() {
   }
   el("depth-slider").value = Math.round(window.DEPTH_DARKEN * 100);
   el("curve-slider").value = window.DEPTH_SOFT;
+  el("plateau-slider").value = window.DEPTH_PLATEAU;
+  el("floor-slider").value = Math.round(window.DEPTH_FLOOR * 100);
 }
 syncLightUI();
 
