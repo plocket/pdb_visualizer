@@ -1048,21 +1048,25 @@ function animate(t) {
   // keep the lights on their arc on the viewer's side, and show markers
   markerGroup.visible = state.showLights;
   const camDist = camera.position.distanceTo(target);
-  // depth shading uniforms: anchor at the nearest atom surface, measure
-  // depth in atom diameters, span across the whole model
+  // depth shading uniforms: anchor at the nearest atom surface in front
+  // of the camera, so the depth cue restarts wherever the camera is,
+  // including inside the protein. Depth is measured in atom diameters.
   if (state.atomRadius && state.typDiam) {
     _dir.copy(target).sub(camera.position).normalize();
     const cp = camera.position, pos = state.pos, rad = state.atomRadius;
-    let near = Infinity;
+    let near = Infinity, far = -Infinity;
     for (let i = 0, j = 0; i < rad.length; i++, j += 3) {
       if (!rad[i]) continue;
       const z = (pos[j] - cp.x) * _dir.x + (pos[j + 1] - cp.y) * _dir.y +
-        (pos[j + 2] - cp.z) * _dir.z - rad[i];
-      if (z < near) near = z;
+        (pos[j + 2] - cp.z) * _dir.z;
+      if (z + rad[i] <= 0) continue;   // whole atom is behind the camera
+      if (z - rad[i] < near) near = z - rad[i];
+      if (z + rad[i] > far) far = z + rad[i];
     }
     if (near < Infinity) {
       const diam = state.typDiam;
-      const span = Math.max(0.5, 2 * state.modelR / diam - 0.5);
+      // span covers only the model depth actually ahead of the camera
+      const span = Math.max(0.5, (far - near) / diam - window.DEPTH_PLATEAU);
       for (const shader of depthShaders) {
         shader.uniforms.uNear.value = near;
         shader.uniforms.uDiam.value = diam;
