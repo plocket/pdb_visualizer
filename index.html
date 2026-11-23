@@ -237,7 +237,12 @@
 
   <div class="row">
     <label for="depth-slider">Depth shading</label>
-    <input type="range" id="depth-slider" min="0" max="100" value="50">
+    <input type="range" id="depth-slider" min="0" max="500" value="200">
+  </div>
+
+  <div class="row">
+    <label for="curve-slider">Depth curve</label>
+    <input type="range" id="curve-slider" min="2" max="30" value="5">
   </div>
 
   <div class="row">
@@ -675,19 +680,25 @@ function atomMaterial(emissive) {
    distance, so zooming keeps the same relative depth cue. */
 const DEPTH_DARKEN = 0.5;   // how much darker the deepest surfaces get
 window.DEPTH_DARKEN = DEPTH_DARKEN;   // live copy, moved by the slider
+/* Progression shape: less than 1 darkens steeply just past the model
+   center and keeps growing darker farther away with no fade-off;
+   1 is linear; more than 1 waits, then falls off quickly. */
+const DEPTH_CURVE = 0.5;
+window.DEPTH_CURVE = DEPTH_CURVE;     // live copy, moved by the slider
 const depthShaders = [];
 function addDepthShade(mat) {
   mat.onBeforeCompile = shader => {
     shader.uniforms.uRefDist = { value: 0 };
     shader.uniforms.uDarken = { value: window.DEPTH_DARKEN };
+    shader.uniforms.uCurve = { value: window.DEPTH_CURVE };
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying float vViewZ;")
       .replace("#include <fog_vertex>", "#include <fog_vertex>\nvViewZ = -mvPosition.z;");
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;\nuniform float uDarken;")
+      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;\nuniform float uDarken;\nuniform float uCurve;")
       .replace("gl_FragColor = vec4( outgoingLight, diffuseColor.a );",
-        "float depthShade = clamp(1.0 - uDarken" +
-        " * (vViewZ - uRefDist) / (uRefDist + 1.0), 0.35, 1.0);\n" +
+        "float depthT = max(0.0, (vViewZ - uRefDist) / (uRefDist + 1.0));\n" +
+        "float depthShade = clamp(1.0 - uDarken * pow(depthT, uCurve), 0.35, 1.0);\n" +
         "gl_FragColor = vec4( outgoingLight * depthShade, diffuseColor.a );");
     depthShaders.push(shader);
   };
@@ -1247,6 +1258,11 @@ el("depth-slider").addEventListener("input", e => {
   for (const shader of depthShaders) shader.uniforms.uDarken.value = window.DEPTH_DARKEN;
 });
 
+el("curve-slider").addEventListener("input", e => {
+  window.DEPTH_CURVE = parseInt(e.target.value, 10) / 10;
+  for (const shader of depthShaders) shader.uniforms.uCurve.value = window.DEPTH_CURVE;
+});
+
 el("outline-toggle").addEventListener("change", e => {
   state.showOutlines = e.target.checked;
   rebuildMolecule();
@@ -1266,6 +1282,7 @@ function lightCode() {
     "\n\nconst ATOM_SPECULAR = 0x" + ATOM_SPECULAR.toString(16).padStart(6, "0") + ";\n" +
     "const ATOM_SHININESS = " + ATOM_SHININESS + ";\n" +
     "const DEPTH_DARKEN = " + window.DEPTH_DARKEN + ";\n" +
+    "const DEPTH_CURVE = " + window.DEPTH_CURVE + ";\n" +
     "const HULL_INFLATE = " + HULL_INFLATE + ";";
 }
 
@@ -1320,6 +1337,7 @@ function syncLightUI() {
     el(powerId).value = Math.round(light.intensity * 100);
   }
   el("depth-slider").value = Math.round(window.DEPTH_DARKEN * 100);
+  el("curve-slider").value = Math.round(window.DEPTH_CURVE * 10);
 }
 syncLightUI();
 
