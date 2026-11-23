@@ -242,7 +242,7 @@
 
   <div class="row">
     <label for="curve-slider">Depth curve</label>
-    <input type="range" id="curve-slider" min="2" max="30" value="5">
+    <input type="range" id="curve-slider" min="0.05" max="1.5" step="0.01" value="0.5">
   </div>
 
   <div class="row">
@@ -1259,7 +1259,7 @@ el("depth-slider").addEventListener("input", e => {
 });
 
 el("curve-slider").addEventListener("input", e => {
-  window.DEPTH_CURVE = parseInt(e.target.value, 10) / 10;
+  window.DEPTH_CURVE = parseFloat(e.target.value);
   for (const shader of depthShaders) shader.uniforms.uCurve.value = window.DEPTH_CURVE;
 });
 
@@ -1337,7 +1337,7 @@ function syncLightUI() {
     el(powerId).value = Math.round(light.intensity * 100);
   }
   el("depth-slider").value = Math.round(window.DEPTH_DARKEN * 100);
-  el("curve-slider").value = Math.round(window.DEPTH_CURVE * 10);
+  el("curve-slider").value = window.DEPTH_CURVE;
 }
 syncLightUI();
 
