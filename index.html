@@ -121,6 +121,8 @@
   details#depth-menu { margin: 8px 0; border: 1px solid var(--panel-edge); border-radius: 6px; padding: 4px 8px; }
   details#depth-menu summary { cursor: pointer; color: var(--text-dim); user-select: none; }
   details#depth-menu .row { margin: 6px 0; }
+  #view-reset { display: flex; gap: 6px; margin-top: 10px; }
+  #view-reset button { flex: 1; padding: 4px 2px; font-size: 11px; }
   #keys-help .ktitle { color: var(--text-dim); margin-bottom: 4px; }
   #keys-help .krow { display: flex; justify-content: space-between; gap: 8px; line-height: 1.7; }
   #keys-help .kcap { font-family: Consolas, monospace; color: var(--accent); white-space: nowrap; }
@@ -275,6 +277,12 @@
   </div>
 
   <button id="copy-lights-btn">Copy light code</button>
+
+  <div id="view-reset">
+    <button id="reset-zoom-btn">Reset zoom</button>
+    <button id="reset-pan-btn">Reset pan</button>
+    <button id="reset-orbit-btn">Reset orbit</button>
+  </div>
 
   <div class="row" id="record-row" style="display:none">
     <label for="record-btn">Video</label>
@@ -593,9 +601,7 @@ let target = new THREE.Vector3();
   });
   dom.addEventListener("wheel", e => {
     e.preventDefault();
-    const factor = Math.pow(1.01, e.deltaY);
-    const offset = camera.position.clone().sub(target).multiplyScalar(factor);
-    camera.position.copy(target).add(offset);
+    zoomCamera(Math.pow(1.01, e.deltaY));
   }, { passive: false });
   // touch support: one finger rotate, two finger pinch zoom
   let pinchDist = 0;
@@ -658,6 +664,13 @@ function orbitCamera(dyaw, dpitch) {
 
 function zoomCamera(factor) {
   const offset = camera.position.clone().sub(target).multiplyScalar(factor);
+  // keep the zoom inside a usable range around the fitted view, so the
+  // camera can neither dig into a near-zero distance nor fly far away
+  if (state.fitDist) {
+    const len = offset.length();
+    const clamped = THREE.MathUtils.clamp(len, state.fitDist * 0.02, state.fitDist * 8);
+    offset.setLength(clamped);
+  }
   camera.position.copy(target).add(offset);
 }
 
@@ -1049,6 +1062,9 @@ function centerAndFit() {
   state.modelR = modelR;
   target.set(0, 0, 0);
   const dist = radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.1;
+  // home view for the reset buttons: fitted distance and start direction
+  state.fitDist = dist;
+  state.homeDir = new THREE.Vector3(0.4, 0.3, 1).normalize();
   camera.position.set(dist * 0.4, dist * 0.3, dist);
   camera.lookAt(target);
 }
@@ -1418,6 +1434,35 @@ el("copy-lights-btn").addEventListener("click", () => {
   } else {
     fallbackCopy(code, done);
   }
+});
+
+/* View reset buttons: put zoom, pan, or orbit back to the fitted home
+   view without touching the other two. */
+function cameraDirAndDist() {
+  const dir = camera.position.clone().sub(target);
+  const dist = dir.length();
+  return { dir: dir.normalize(), dist };
+}
+
+el("reset-zoom-btn").addEventListener("click", () => {
+  if (!state.fitDist) return;
+  const { dir } = cameraDirAndDist();
+  camera.position.copy(target).addScaledVector(dir, state.fitDist);
+  camera.lookAt(target);
+});
+
+el("reset-pan-btn").addEventListener("click", () => {
+  const { dir, dist } = cameraDirAndDist();
+  target.set(0, 0, 0);
+  camera.position.copy(target).addScaledVector(dir, dist);
+  camera.lookAt(target);
+});
+
+el("reset-orbit-btn").addEventListener("click", () => {
+  if (!state.homeDir) return;
+  const { dist } = cameraDirAndDist();
+  camera.position.copy(target).addScaledVector(state.homeDir, dist);
+  camera.lookAt(target);
 });
 
 function fallbackCopy(text, done) {
