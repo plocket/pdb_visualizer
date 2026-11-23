@@ -438,11 +438,11 @@ function viewerLight(hex, intensity, offset) {
   scene.add(light);
   return light;
 }
-const keyLight = viewerLight(0xffffff, 0.95, new THREE.Vector3(0.6, 0.8, 1.0));
-const fillLight = viewerLight(0x7788ff, 0.35, new THREE.Vector3(-0.9, 0.2, 0.8));
-const backLight = viewerLight(0xff8866, 0.25, new THREE.Vector3(0.1, -0.7, 0.9));
-const topLight = viewerLight(0xaaffcc, 0.2, new THREE.Vector3(-0.4, 1.0, 0.5));
-const bottomLight = viewerLight(0xffd4a8, 0.15, new THREE.Vector3(0.5, -1.0, 0.6));
+const keyLight = viewerLight(0xffffff, 0.95, new THREE.Vector3(1.0, 1.3, 0.7));
+const fillLight = viewerLight(0x7788ff, 0.35, new THREE.Vector3(-1.5, 0.3, 0.6));
+const backLight = viewerLight(0xff8866, 0.25, new THREE.Vector3(0.2, -1.2, 0.7));
+const topLight = viewerLight(0xaaffcc, 0.2, new THREE.Vector3(-0.8, 1.8, 0.3));
+const bottomLight = viewerLight(0xffd4a8, 0.15, new THREE.Vector3(1.0, -1.8, 0.4));
 const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight];
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
 
