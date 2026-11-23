@@ -480,6 +480,8 @@ const KEY_CODES = new Set([
 const KEY_ORBIT_SPEED = 0.03;   // radians per tick
 const KEY_ZOOM_SPEED = 0.02;    // fraction per tick
 window.addEventListener("keydown", e => {
+  // let browser and OS shortcuts (Cmd+Alt+I, Cmd+R, ...) pass through
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target && e.target.tagName;
   if (t === "INPUT" || t === "SELECT" || t === "TEXTAREA" || t === "BUTTON") return;
   if (KEY_CODES.has(e.code)) { keys.add(e.code); e.preventDefault(); }
