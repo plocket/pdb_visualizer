@@ -429,21 +429,21 @@ scene.background = new THREE.Color(0x10141a);
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100000);
 camera.position.set(0, 0, 60);
 
-const keyLight = new THREE.DirectionalLight(0xffffff, 0.95);
-keyLight.position.set(1, 1, 1).normalize();
-scene.add(keyLight);
-const fillLight = new THREE.DirectionalLight(0x7788ff, 0.35);
-fillLight.position.set(-1, -0.5, -1).normalize();
-scene.add(fillLight);
-const backLight = new THREE.DirectionalLight(0xff8866, 0.25);
-backLight.position.set(0.2, -1, -0.6).normalize();
-scene.add(backLight);
-const topLight = new THREE.DirectionalLight(0xaaffcc, 0.2);
-topLight.position.set(0, 1, -0.2).normalize();
-scene.add(topLight);
-const bottomLight = new THREE.DirectionalLight(0xffd4a8, 0.15);
-bottomLight.position.set(0, -1, 0.4).normalize();
-scene.add(bottomLight);
+/* Five lights, all on the viewer's side of the model. Offsets are in
+   camera space, so the lights stay behind the viewer while orbiting.
+   Camera space: +x right, +y up, +z toward the viewer. */
+function viewerLight(hex, intensity, offset) {
+  const light = new THREE.DirectionalLight(hex, intensity);
+  light.userData.offset = offset;
+  scene.add(light);
+  return light;
+}
+const keyLight = viewerLight(0xffffff, 0.95, new THREE.Vector3(0.6, 0.8, 1.0));
+const fillLight = viewerLight(0x7788ff, 0.35, new THREE.Vector3(-0.9, 0.2, 0.8));
+const backLight = viewerLight(0xff8866, 0.25, new THREE.Vector3(0.1, -0.7, 0.9));
+const topLight = viewerLight(0xaaffcc, 0.2, new THREE.Vector3(-0.4, 1.0, 0.5));
+const bottomLight = viewerLight(0xffd4a8, 0.15, new THREE.Vector3(0.5, -1.0, 0.6));
+const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight];
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
 
 const molGroup = new THREE.Group();
@@ -874,6 +874,11 @@ function centerAndFit() {
 function animate(t) {
   requestAnimationFrame(animate);
   if (keys.size) handleKeys();
+  // keep the lights on the viewer's side at their fixed angles
+  for (const light of viewLights) {
+    _p.copy(light.userData.offset).applyQuaternion(camera.quaternion).add(camera.position);
+    light.position.copy(_p);
+  }
   if (state.spin) {
     const offset = camera.position.clone().sub(target);
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.0035);
