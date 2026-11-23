@@ -584,11 +584,10 @@ let target = new THREE.Vector3();
       // own axes, so drag directions stay meaningful at any orientation
       orbitByAngles(dx * 0.006, dy * 0.006);
     } else {
-      // pan in the camera plane. The speed follows the nearest surface
-      // ahead, not the orbit target, so the content the viewer is next
-      // to moves at the same screen speed everywhere in the model.
-      const anchor = computeDepthAnchor();
-      const panScale = Math.max(anchor.near, state.typDiam * 0.25 || 1) * 0.0016;
+      // pan in the camera plane at a constant screen speed: the speed
+      // at the fitted starting distance from the protein. The same drag
+      // moves the protein the same amount on screen at any depth.
+      const panScale = (state.fitDist || camera.position.distanceTo(target)) * 0.0016;
       const right = new THREE.Vector3(1, 0, 0).applyQuaternion(viewQuat);
       const up = new THREE.Vector3(0, 1, 0).applyQuaternion(viewQuat);
       target.addScaledVector(right, -dx * panScale);
