@@ -242,25 +242,25 @@
     <summary>Depth shading</summary>
     <div class="row">
       <label for="depth-slider">Darkening</label>
-      <input type="range" id="depth-slider" min="0" max="500" value="200">
+      <input type="range" id="depth-slider" min="0" max="500" value="78">
     </div>
     <div class="row">
       <label for="curve-slider">Softness</label>
-      <input type="range" id="curve-slider" min="0.001" max="5" step="0.001" value="0.5">
+      <input type="range" id="curve-slider" min="0.001" max="5" step="0.001" value="0.388">
     </div>
     <div class="row">
       <label for="plateau-slider">Plateau</label>
-      <input type="range" id="plateau-slider" min="0" max="3" step="0.01" value="0.5">
+      <input type="range" id="plateau-slider" min="0" max="3" step="0.01" value="1.75">
     </div>
     <div class="row">
       <label for="floor-slider">Floor</label>
-      <input type="range" id="floor-slider" min="0" max="90" step="1" value="30">
+      <input type="range" id="floor-slider" min="0" max="90" step="1" value="0">
     </div>
   </details>
 
   <div class="row">
     <label for="lightsvis-toggle">Show light positions</label>
-    <input type="checkbox" id="lightsvis-toggle" checked>
+    <input type="checkbox" id="lightsvis-toggle">
   </div>
 
   <div class="row">
@@ -483,27 +483,44 @@ function arcLight(hex, intensity, deg) {
   light.userData.deg = deg;
   return light;
 }
-// const keyLight    = arcLight(0xffffff, 0.95,   0); // far right
-// const fillLight   = arcLight(0x7788ff, 0.35,  45); // upper right
-// const backLight   = arcLight(0xff8866, 0.25,  90); // top
-// const topLight    = arcLight(0xaaffcc, 0.2,  135); // upper left
-// const bottomLight = arcLight(0xffd4a8, 0.15, 180); // far left
 
-const keyLight    = arcLight(0xffffff, 0.30,    0);
-const fillLight   = arcLight(0x001eff, 0.20,   45);
-const backLight   = arcLight(0xff3700, 0.25,   90);
-const topLight    = arcLight(0x4dff94, 0.17,  135);
-const bottomLight = arcLight(0xfba651, 0.11,  180);
+// Manually customized default values section (paste new vals here if needed)
+const keyLight    = arcLight(0xffffff, 0.56,    0); // far right
+const fillLight   = arcLight(0x001eff, 0.20,   45); // upper right
+const backLight   = arcLight(0xff3700, 0.25,   90); // top
+const topLight    = arcLight(0x4dff94, 0.17,  135); // upper left
+const bottomLight = arcLight(0xfba651, 0.11,  180); // far left
 /* Slightly shiny surface: a tight, faint highlight reads as sheen. A
    broad highlight with the same strength reads as plastic, so the
    shininess stays high while the specular color stays dark. */
 const ATOM_SPECULAR = 0x191919;
 const ATOM_SHININESS = 55;
-
-const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight];
+/* Depth shading: fragments farther from the camera than the model
+   center get darker, computed in the shader, so no fog object and no
+   per-atom CPU work is needed. The strength scales with the camera
+   distance, so zooming keeps the same relative depth cue. */
+const DEPTH_DARKEN = 0.78;   // how much darker the deepest surfaces get
+/* Depth progression: the front hemisphere of the closest atom stays at
+   full brightness, then darkness follows a logarithmic curve, so each
+   further step of darkness needs more depth than the one before.
+   DEPTH_SOFT is the softness of the first transition, in atom
+   diameters: low values make a hard edge right after the plateau,
+   high values fade gradually. */
+const DEPTH_SOFT = 0.388;
+/* Plateau: depth in diameters that keeps full brightness before the
+   progression starts. 0.5 is the front hemisphere of the closest atom. */
+const DEPTH_PLATEAU = 1.75;
+/* Floor: brightness the deepest surfaces bottom out at. */
+const DEPTH_FLOOR = 0;
+/* Inverted hull for outlines: the same geometry slightly inflated,
+   drawn back-face only, so it shows as a rim around the silhouette.
+   A nearer atom's depth hides the rim of atoms behind it, which
+   separates overlapping same-shade atoms. */
+const HULL_INFLATE = 1.07;
 
 /* Bright markers that show where each light sits. MeshBasicMaterial
    ignores lighting, so the markers glow in the light's own color. */
+const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight];
 const markerGeo = new THREE.SphereGeometry(1, 12, 8);
 const markerGroup = new THREE.Group();
 scene.add(markerGroup);
@@ -676,8 +693,6 @@ const tetraGeo   = new THREE.TetrahedronGeometry(1.35);
 /* Slightly shiny surface: a tight, faint highlight reads as sheen. A
    broad highlight with the same strength reads as plastic, so the
    shininess stays high while the specular color stays dark. */
-// const ATOM_SPECULAR = 0x191919;
-// const ATOM_SHININESS = 55;
 function atomMaterial(emissive) {
   const mat = new THREE.MeshPhongMaterial({
     specular: ATOM_SPECULAR,
@@ -687,26 +702,9 @@ function atomMaterial(emissive) {
   if (emissive) mat.emissive.copy(emissive);
   return mat;
 }
-/* Depth shading: fragments farther from the camera than the model
-   center get darker, computed in the shader, so no fog object and no
-   per-atom CPU work is needed. The strength scales with the camera
-   distance, so zooming keeps the same relative depth cue. */
-const DEPTH_DARKEN = 0.5;   // how much darker the deepest surfaces get
 window.DEPTH_DARKEN = DEPTH_DARKEN;   // live copy, moved by the slider
-/* Depth progression: the front hemisphere of the closest atom stays at
-   full brightness, then darkness follows a logarithmic curve, so each
-   further step of darkness needs more depth than the one before.
-   DEPTH_SOFT is the softness of the first transition, in atom
-   diameters: low values make a hard edge right after the plateau,
-   high values fade gradually. */
-const DEPTH_SOFT = 0.5;
 window.DEPTH_SOFT = DEPTH_SOFT;       // live copy, moved by the slider
-/* Plateau: depth in diameters that keeps full brightness before the
-   progression starts. 0.5 is the front hemisphere of the closest atom. */
-const DEPTH_PLATEAU = 0.5;
 window.DEPTH_PLATEAU = DEPTH_PLATEAU; // live copy, moved by the slider
-/* Floor: brightness the deepest surfaces bottom out at. */
-const DEPTH_FLOOR = 0.3;
 window.DEPTH_FLOOR = DEPTH_FLOOR;     // live copy, moved by the slider
 const depthShaders = [];
 function addDepthShade(mat) {
@@ -733,11 +731,7 @@ function addDepthShade(mat) {
     depthShaders.push(shader);
   };
 }
-/* Inverted hull for outlines: the same geometry slightly inflated,
-   drawn back-face only, so it shows as a rim around the silhouette.
-   A nearer atom's depth hides the rim of atoms behind it, which
-   separates overlapping same-shade atoms. */
-const HULL_INFLATE = 1.07;
+
 const hullGeoCache = new Map();
 function hullGeoFor(geo) {
   let hull = hullGeoCache.get(geo);
@@ -760,7 +754,7 @@ const state = {
   bonded: null,     // Uint8Array: 1 if the atom takes part in a bond
   shapeMode: false, // draw different shapes per element
   meshes: [],       // one InstancedMesh per shape, with its atom indices
-  showLights: true, // draw markers at the light positions
+  showLights: false,// draw markers at the light positions
   showOutlines: true, // draw a dark rim around each atom
   style: "ball-stick",
   scale: .7,
@@ -1350,20 +1344,44 @@ el("outline-toggle").addEventListener("change", e => {
    to paste over the defaults in the source. */
 function lightCode() {
   const names = ["keyLight", "fillLight", "backLight", "topLight", "bottomLight"];
+  const position = [ "// far right", "// upper right", "// top", "// upper left", "// far left" ];
   const lines = viewLights.map((light, i) => {
     const hex = "0x" + light.color.getHexString();
     const deg = String(light.userData.deg).padStart(4);
     return "const " + names[i].padEnd(12) + "= arcLight(" + hex + ", " +
-      light.intensity.toFixed(2) + ", " + deg + ");";
+      light.intensity.toFixed(2) + ", " + deg + ");" +
+      " " + position[i];
   });
-  return lines.join("\n") +
-    "\n\nconst ATOM_SPECULAR = 0x" + ATOM_SPECULAR.toString(16).padStart(6, "0") + ";\n" +
-    "const ATOM_SHININESS = " + ATOM_SHININESS + ";\n" +
-    "const DEPTH_DARKEN = " + window.DEPTH_DARKEN + ";\n" +
-    "const DEPTH_SOFT = " + window.DEPTH_SOFT + ";\n" +
-    "const DEPTH_PLATEAU = " + window.DEPTH_PLATEAU + ";\n" +
-    "const DEPTH_FLOOR = " + window.DEPTH_FLOOR + ";\n" +
-    "const HULL_INFLATE = " + HULL_INFLATE + ";";
+  return lines.join("\n") + `
+
+/* Slightly shiny surface: a tight, faint highlight reads as sheen. A
+   broad highlight with the same strength reads as plastic, so the
+   shininess stays high while the specular color stays dark. */
+const ATOM_SPECULAR = 0x${ ATOM_SPECULAR.toString(16).padStart(6, "0") };
+const ATOM_SHININESS = ${ ATOM_SHININESS };
+/* Depth shading: fragments farther from the camera than the model
+   center get darker, computed in the shader, so no fog object and no
+   per-atom CPU work is needed. The strength scales with the camera
+   distance, so zooming keeps the same relative depth cue. */
+const DEPTH_DARKEN = ${ window.DEPTH_DARKEN };   // how much darker the deepest surfaces get
+/* Depth progression: the front hemisphere of the closest atom stays at
+   full brightness, then darkness follows a logarithmic curve, so each
+   further step of darkness needs more depth than the one before.
+   DEPTH_SOFT is the softness of the first transition, in atom
+   diameters: low values make a hard edge right after the plateau,
+   high values fade gradually. */
+const DEPTH_SOFT = ${ window.DEPTH_SOFT };
+/* Plateau: depth in diameters that keeps full brightness before the
+   progression starts. 0.5 is the front hemisphere of the closest atom. */
+const DEPTH_PLATEAU = ${ window.DEPTH_PLATEAU };
+/* Floor: brightness the deepest surfaces bottom out at. */
+const DEPTH_FLOOR = ${ window.DEPTH_FLOOR };
+/* Inverted hull for outlines: the same geometry slightly inflated,
+   drawn back-face only, so it shows as a rim around the silhouette.
+   A nearer atom's depth hides the rim of atoms behind it, which
+   separates overlapping same-shade atoms. */
+const HULL_INFLATE = ${ HULL_INFLATE };
+`
 }
 
 el("copy-lights-btn").addEventListener("click", () => {
