@@ -679,13 +679,14 @@ const depthShaders = [];
 function addDepthShade(mat) {
   mat.onBeforeCompile = shader => {
     shader.uniforms.uRefDist = { value: 0 };
+    shader.uniforms.uDarken = { value: window.DEPTH_DARKEN };
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying float vViewZ;")
       .replace("#include <fog_vertex>", "#include <fog_vertex>\nvViewZ = -mvPosition.z;");
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;")
+      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;\nuniform float uDarken;")
       .replace("gl_FragColor = vec4( outgoingLight, diffuseColor.a );",
-        "float depthShade = clamp(1.0 - " + DEPTH_DARKEN +
+        "float depthShade = clamp(1.0 - uDarken" +
         " * (vViewZ - uRefDist) / (uRefDist + 1.0), 0.35, 1.0);\n" +
         "gl_FragColor = vec4( outgoingLight * depthShade, diffuseColor.a );");
     depthShaders.push(shader);
@@ -1239,14 +1240,11 @@ el("lightsvis-toggle").addEventListener("change", e => {
   state.showLights = e.target.checked;
 });
 
-/* Depth shading slider: rewires the injected shader constant. The
-   shader source is rewritten in place, so no recompiles are needed. */
+/* Depth shading slider: sets the shader uniform, which is live every
+   frame. No recompile is needed. */
 el("depth-slider").addEventListener("input", e => {
   window.DEPTH_DARKEN = parseInt(e.target.value, 10) / 100;
-  for (const shader of depthShaders) {
-    shader.fragmentShader = shader.fragmentShader.replace(
-      /1\.0 - [0-9.]+ \*/, "1.0 - " + window.DEPTH_DARKEN + " *");
-  }
+  for (const shader of depthShaders) shader.uniforms.uDarken.value = window.DEPTH_DARKEN;
 });
 
 el("outline-toggle").addEventListener("change", e => {
