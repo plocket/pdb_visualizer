@@ -235,6 +235,11 @@
     <span id="frame-label">0 / 0</span>
   </div>
 
+  <div class="row">
+    <label for="lightsvis-toggle">Show light positions</label>
+    <input type="checkbox" id="lightsvis-toggle" checked>
+  </div>
+
   <div class="row" id="record-row" style="display:none">
     <label for="record-btn">Video</label>
     <button id="record-btn">Record</button>
@@ -440,7 +445,7 @@ function viewerLight(hex, intensity, offset) {
   scene.add(light);
   return light;
 }
-const ARC_Z = 0.55;   // same depth for every light, on the viewer's side
+const ARC_Z = 0.2;    // slight depth on the viewer's side, so the half circle spreads fully
 function arcLight(hex, intensity, deg) {
   const a = THREE.MathUtils.degToRad(deg);
   return viewerLight(hex, intensity,
@@ -452,6 +457,18 @@ const backLight   = arcLight(0xff8866, 0.25,  90); // top
 const topLight    = arcLight(0xaaffcc, 0.2,  135); // upper left
 const bottomLight = arcLight(0xffd4a8, 0.15, 180); // far left
 const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight];
+
+/* Bright markers that show where each light sits. MeshBasicMaterial
+   ignores lighting, so the markers glow in the light's own color. */
+const markerGeo = new THREE.SphereGeometry(1, 12, 8);
+const markerGroup = new THREE.Group();
+scene.add(markerGroup);
+for (const light of viewLights) {
+  const marker = new THREE.Mesh(markerGeo,
+    new THREE.MeshBasicMaterial({ color: light.color }));
+  markerGroup.add(marker);
+  light.userData.marker = marker;
+}
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
 
 const molGroup = new THREE.Group();
@@ -612,6 +629,16 @@ const pyramidGeo = new THREE.ConeGeometry(1.15, 1.5, 4);
 const cubeGeo    = new THREE.BoxGeometry(1.35, 1.35, 1.35);
 const octaGeo    = new THREE.OctahedronGeometry(1.25);
 const tetraGeo   = new THREE.TetrahedronGeometry(1.35);
+/* Slightly shiny surface: a soft specular highlight helps the eye read
+   curvature on atoms of the same shade next to each other. */
+const ATOM_SPECULAR = 0x2e2e2e;
+const ATOM_SHININESS = 26;
+function atomMaterial() {
+  return new THREE.MeshPhongMaterial({
+    specular: ATOM_SPECULAR,
+    shininess: ATOM_SHININESS,
+  });
+}
 const state = {
   data: null,       // parsePdb result
   bonds: null,      // flat index pairs
@@ -623,6 +650,7 @@ const state = {
   bonded: null,     // Uint8Array: 1 if the atom takes part in a bond
   shapeMode: false, // draw different shapes per element
   meshes: [],       // one InstancedMesh per shape, with its atom indices
+  showLights: true, // draw markers at the light positions
   style: "ball-stick",
   scale: .7,
   showHydrogens: true,
@@ -813,7 +841,7 @@ function rebuildMolecule() {
     }
     const col = new THREE.Color();
     for (const [geo, idxs] of groups) {
-      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial(), idxs.length);
+      const mesh = new THREE.InstancedMesh(geo, atomMaterial(), idxs.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const radii = new Float32Array(idxs.length);
       for (let k = 0; k < idxs.length; k++) {
@@ -840,7 +868,7 @@ function rebuildMolecule() {
     if (pairs.length) {
       state.bondPairs = Int32Array.from(pairs);
       state.bondR = bondRadius;
-      const mesh = new THREE.InstancedMesh(cylGeo, new THREE.MeshLambertMaterial(), pairs.length);
+      const mesh = new THREE.InstancedMesh(cylGeo, atomMaterial(), pairs.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const col = new THREE.Color();
       for (let p = 0, inst = 0; p < pairs.length; p += 2, inst += 2) {
@@ -882,10 +910,20 @@ function centerAndFit() {
 function animate(t) {
   requestAnimationFrame(animate);
   if (keys.size) handleKeys();
-  // keep the lights on the viewer's side at their fixed angles
+  // keep the lights on their arc on the viewer's side, and show markers
+  markerGroup.visible = state.showLights;
+  const camDist = camera.position.distanceTo(target);
   for (const light of viewLights) {
-    _p.copy(light.userData.offset).applyQuaternion(camera.quaternion).add(camera.position);
-    light.position.copy(_p);
+    _p.copy(light.userData.offset).applyQuaternion(camera.quaternion);
+    const dir = _p.normalize();
+    // light sits well behind the camera along its arc direction
+    light.position.copy(camera.position).addScaledVector(dir, camDist * 2);
+    if (state.showLights) {
+      // marker floats between the model and the light, always the same
+      // apparent size, so the arc stays easy to read while zooming
+      light.userData.marker.position.copy(target).addScaledVector(dir, camDist * 1.6);
+      light.userData.marker.scale.setScalar(camDist * 0.035);
+    }
   }
   if (state.spin) {
     const offset = camera.position.clone().sub(target);
@@ -1110,6 +1148,10 @@ el("spin-toggle").addEventListener("change", e => {
 el("shape-toggle").addEventListener("change", e => {
   state.shapeMode = e.target.checked;
   rebuildMolecule();
+});
+
+el("lightsvis-toggle").addEventListener("change", e => {
+  state.showLights = e.target.checked;
 });
 
 /* two colored lights with adjustable brightness */
