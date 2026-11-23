@@ -680,25 +680,33 @@ function atomMaterial(emissive) {
    distance, so zooming keeps the same relative depth cue. */
 const DEPTH_DARKEN = 0.5;   // how much darker the deepest surfaces get
 window.DEPTH_DARKEN = DEPTH_DARKEN;   // live copy, moved by the slider
-/* Progression shape: less than 1 darkens steeply just past the model
-   center and keeps growing darker farther away with no fade-off;
-   1 is linear; more than 1 waits, then falls off quickly. */
-const DEPTH_CURVE = 0.5;
-window.DEPTH_CURVE = DEPTH_CURVE;     // live copy, moved by the slider
+/* Depth progression: the front hemisphere of the closest atom stays at
+   full brightness, then darkness follows a logarithmic curve, so each
+   further step of darkness needs more depth than the one before.
+   DEPTH_SOFT is the softness of the first transition, in atom
+   diameters: low values make a hard edge right after the plateau,
+   high values fade gradually. */
+const DEPTH_SOFT = 0.5;
+window.DEPTH_SOFT = DEPTH_SOFT;       // live copy, moved by the slider
 const depthShaders = [];
 function addDepthShade(mat) {
   mat.onBeforeCompile = shader => {
     shader.uniforms.uRefDist = { value: 0 };
     shader.uniforms.uDarken = { value: window.DEPTH_DARKEN };
-    shader.uniforms.uCurve = { value: window.DEPTH_CURVE };
+    shader.uniforms.uSoft = { value: window.DEPTH_SOFT };
+    shader.uniforms.uNear = { value: 0 };
+    shader.uniforms.uDiam = { value: 1 };
+    shader.uniforms.uSpan = { value: 8 };
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying float vViewZ;")
       .replace("#include <fog_vertex>", "#include <fog_vertex>\nvViewZ = -mvPosition.z;");
     shader.fragmentShader = shader.fragmentShader
-      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;\nuniform float uDarken;\nuniform float uCurve;")
+      .replace("#include <common>", "#include <common>\nvarying float vViewZ;\nuniform float uRefDist;\nuniform float uDarken;\nuniform float uSoft;\nuniform float uNear;\nuniform float uDiam;\nuniform float uSpan;")
       .replace("gl_FragColor = vec4( outgoingLight, diffuseColor.a );",
-        "float depthT = max(0.0, (vViewZ - uRefDist) / (uRefDist + 1.0));\n" +
-        "float depthShade = clamp(1.0 - uDarken * pow(depthT, uCurve), 0.35, 1.0);\n" +
+        "float t = max(0.0, vViewZ - uNear) / uDiam;\n" +
+        "float x = max(0.0, t - 0.5);\n" +
+        "float d = log(1.0 + x / uSoft) / log(1.0 + uSpan / uSoft);\n" +
+        "float depthShade = clamp(1.0 - uDarken * min(d, 1.0), 0.3, 1.0);\n" +
         "gl_FragColor = vec4( outgoingLight * depthShade, diffuseColor.a );");
     depthShaders.push(shader);
   };
@@ -929,6 +937,10 @@ function rebuildMolecule() {
       groups.get(el).push(i);
     }
     const col = new THREE.Color();
+    // per-atom radius for the depth shading anchor, and the typical
+    // atom diameter the depth progression is measured in
+    state.atomRadius.fill(0);
+    let radiiSum = 0, radiiCount = 0;
     for (const [elName, idxs] of groups) {
       const e = ELEMENTS[elName] || UNKNOWN_EL;
       const mesh = new THREE.InstancedMesh(geoFor(elName),
@@ -937,8 +949,12 @@ function rebuildMolecule() {
       const radii = new Float32Array(idxs.length);
       for (let k = 0; k < idxs.length; k++) {
         radii[k] = (style === "spacefill" ? e.vdw : e.cov * 1) * state.scale;
+        state.atomRadius[idxs[k]] = radii[k];
+        radiiSum += radii[k];
+        radiiCount++;
         mesh.setColorAt(k, col.setHex(e.color));
       }
+      state.typDiam = 2 * radiiSum / Math.max(1, radiiCount);
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       let hull = null;
       if (state.showOutlines) {
@@ -994,6 +1010,13 @@ function centerAndFit() {
     for (const a of frame) { a.x -= cx; a.y -= cy; a.z -= cz; }
   }
   const radius = Math.max(maxX - minX, maxY - minY, maxZ - minZ) / 2 || 10;
+  // bounding radius from the center, for the depth shading span
+  let modelR = 0;
+  for (const a of frameAtoms()) {
+    const d = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+    if (d > modelR) modelR = d;
+  }
+  state.modelR = modelR;
   target.set(0, 0, 0);
   const dist = radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2)) * 1.1;
   camera.position.set(dist * 0.4, dist * 0.3, dist);
@@ -1009,6 +1032,28 @@ function animate(t) {
   // keep the lights on their arc on the viewer's side, and show markers
   markerGroup.visible = state.showLights;
   const camDist = camera.position.distanceTo(target);
+  // depth shading uniforms: anchor at the nearest atom surface, measure
+  // depth in atom diameters, span across the whole model
+  if (state.atomRadius && state.typDiam) {
+    _dir.copy(target).sub(camera.position).normalize();
+    const cp = camera.position, pos = state.pos, rad = state.atomRadius;
+    let near = Infinity;
+    for (let i = 0, j = 0; i < rad.length; i++, j += 3) {
+      if (!rad[i]) continue;
+      const z = (pos[j] - cp.x) * _dir.x + (pos[j + 1] - cp.y) * _dir.y +
+        (pos[j + 2] - cp.z) * _dir.z - rad[i];
+      if (z < near) near = z;
+    }
+    if (near < Infinity) {
+      const diam = state.typDiam;
+      const span = Math.max(0.5, 2 * state.modelR / diam - 0.5);
+      for (const shader of depthShaders) {
+        shader.uniforms.uNear.value = near;
+        shader.uniforms.uDiam.value = diam;
+        shader.uniforms.uSpan.value = span;
+      }
+    }
+  }
   for (const shader of depthShaders) shader.uniforms.uRefDist.value = camDist;
   for (const light of viewLights) {
     _p.copy(light.userData.offset).applyQuaternion(camera.quaternion);
@@ -1137,6 +1182,7 @@ async function loadFile(file) {
   // smoothing needs identical atom counts in every frame
   state.smoothable = data.frames.every(fr => fr.length === data.atomCount);
   state.pos = new Float32Array(data.atomCount * 3);
+  state.atomRadius = new Float32Array(data.atomCount);
   startScreen.style.display = "none";
   el("controls").style.display = "block";
 
@@ -1259,8 +1305,8 @@ el("depth-slider").addEventListener("input", e => {
 });
 
 el("curve-slider").addEventListener("input", e => {
-  window.DEPTH_CURVE = parseFloat(e.target.value);
-  for (const shader of depthShaders) shader.uniforms.uCurve.value = window.DEPTH_CURVE;
+  window.DEPTH_SOFT = parseFloat(e.target.value);
+  for (const shader of depthShaders) shader.uniforms.uSoft.value = window.DEPTH_SOFT;
 });
 
 el("outline-toggle").addEventListener("change", e => {
@@ -1282,7 +1328,7 @@ function lightCode() {
     "\n\nconst ATOM_SPECULAR = 0x" + ATOM_SPECULAR.toString(16).padStart(6, "0") + ";\n" +
     "const ATOM_SHININESS = " + ATOM_SHININESS + ";\n" +
     "const DEPTH_DARKEN = " + window.DEPTH_DARKEN + ";\n" +
-    "const DEPTH_CURVE = " + window.DEPTH_CURVE + ";\n" +
+    "const DEPTH_SOFT = " + window.DEPTH_SOFT + ";\n" +
     "const HULL_INFLATE = " + HULL_INFLATE + ";";
 }
 
@@ -1337,7 +1383,7 @@ function syncLightUI() {
     el(powerId).value = Math.round(light.intensity * 100);
   }
   el("depth-slider").value = Math.round(window.DEPTH_DARKEN * 100);
-  el("curve-slider").value = window.DEPTH_CURVE;
+  el("curve-slider").value = window.DEPTH_SOFT;
 }
 syncLightUI();
 
