@@ -197,6 +197,12 @@
   </div>
 
   <div class="row">
+    <label for="light3-color">Light 3 color</label>
+    <input type="color" id="light3-color" value="#ff8866">
+    <input type="range" id="light3-power" min="0" max="200" value="25">
+  </div>
+
+  <div class="row">
     <label for="spin-toggle">Auto spin</label>
     <input type="checkbox" id="spin-toggle">
   </div>
@@ -417,6 +423,9 @@ scene.add(keyLight);
 const fillLight = new THREE.DirectionalLight(0x7788ff, 0.35);
 fillLight.position.set(-1, -0.5, -1).normalize();
 scene.add(fillLight);
+const backLight = new THREE.DirectionalLight(0xff8866, 0.25);
+backLight.position.set(0.2, -1, -0.6).normalize();
+scene.add(backLight);
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
 
 const molGroup = new THREE.Group();
@@ -1083,6 +1092,7 @@ function wireLight(colorId, powerId, light) {
 }
 wireLight("light1-color", "light1-power", keyLight);
 wireLight("light2-color", "light2-power", fillLight);
+wireLight("light3-color", "light3-power", backLight);
 
 /* ============================================================
    Video recording: capture the canvas exactly as the user sees it.
