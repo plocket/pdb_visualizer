@@ -240,6 +240,8 @@
     <input type="checkbox" id="lightsvis-toggle" checked>
   </div>
 
+  <button id="copy-lights-btn">Copy light code</button>
+
   <div class="row" id="record-row" style="display:none">
     <label for="record-btn">Video</label>
     <button id="record-btn">Record</button>
@@ -448,8 +450,10 @@ function viewerLight(hex, intensity, offset) {
 const ARC_Z = 0.2;    // slight depth on the viewer's side, so the half circle spreads fully
 function arcLight(hex, intensity, deg) {
   const a = THREE.MathUtils.degToRad(deg);
-  return viewerLight(hex, intensity,
+  const light = viewerLight(hex, intensity,
     new THREE.Vector3(Math.cos(a), Math.sin(a), ARC_Z));
+  light.userData.deg = deg;
+  return light;
 }
 const keyLight    = arcLight(0xffffff, 0.95,   0); // far right
 const fillLight   = arcLight(0x7788ff, 0.35,  45); // upper right
@@ -629,15 +633,18 @@ const pyramidGeo = new THREE.ConeGeometry(1.15, 1.5, 4);
 const cubeGeo    = new THREE.BoxGeometry(1.35, 1.35, 1.35);
 const octaGeo    = new THREE.OctahedronGeometry(1.25);
 const tetraGeo   = new THREE.TetrahedronGeometry(1.35);
-/* Slightly shiny surface: a soft specular highlight helps the eye read
-   curvature on atoms of the same shade next to each other. */
-const ATOM_SPECULAR = 0x2e2e2e;
-const ATOM_SHININESS = 26;
-function atomMaterial() {
-  return new THREE.MeshPhongMaterial({
+/* Slightly shiny surface: a tight, faint highlight reads as sheen. A
+   broad highlight with the same strength reads as plastic, so the
+   shininess stays high while the specular color stays dark. */
+const ATOM_SPECULAR = 0x191919;
+const ATOM_SHININESS = 55;
+function atomMaterial(emissive) {
+  const mat = new THREE.MeshPhongMaterial({
     specular: ATOM_SPECULAR,
     shininess: ATOM_SHININESS,
   });
+  if (emissive) mat.emissive.copy(emissive);
+  return mat;
 }
 const state = {
   data: null,       // parsePdb result
@@ -822,9 +829,11 @@ function rebuildMolecule() {
   const showBonds = style !== "spacefill";
   const bondRadius = (style === "ball-stick" ? 0.16 : 0.05) * (0.5 + 0.5 * state.scale);
 
-  /* ----- atoms (instanced meshes; one per shape in shape mode) ----- */
+  /* ----- atoms (one instanced mesh per element) -----
+     Grouping by element lets each element carry a small glow of its
+     own color, so its identity stays readable even where the lights
+     leave a surface dark. */
   if (style !== "lines") {
-    // group the visible atoms by geometry
     const geoFor = el => {
       if (!state.shapeMode) return sphereGeo;
       if (el === "N" || el === "P") return pyramidGeo;
@@ -833,19 +842,20 @@ function rebuildMolecule() {
       if (el === "F" || el === "CL" || el === "BR" || el === "I") return tetraGeo;
       return sphereGeo; // H and everything else
     };
-    const groups = new Map(); // geometry -> [atom index, ...]
+    const groups = new Map(); // element -> [atom index, ...]
     for (const i of visAtom) {
-      const g = geoFor(atoms[i].el);
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g).push(i);
+      const el = atoms[i].el;
+      if (!groups.has(el)) groups.set(el, []);
+      groups.get(el).push(i);
     }
     const col = new THREE.Color();
-    for (const [geo, idxs] of groups) {
-      const mesh = new THREE.InstancedMesh(geo, atomMaterial(), idxs.length);
+    for (const [elName, idxs] of groups) {
+      const e = ELEMENTS[elName] || UNKNOWN_EL;
+      const mesh = new THREE.InstancedMesh(geoFor(elName),
+        atomMaterial(col.setHex(e.color).multiplyScalar(0.12)), idxs.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const radii = new Float32Array(idxs.length);
       for (let k = 0; k < idxs.length; k++) {
-        const e = ELEMENTS[atoms[idxs[k]].el] || UNKNOWN_EL;
         radii[k] = (style === "spacefill" ? e.vdw : e.cov * 1) * state.scale;
         mesh.setColorAt(k, col.setHex(e.color));
       }
@@ -919,10 +929,10 @@ function animate(t) {
     // light sits well behind the camera along its arc direction
     light.position.copy(camera.position).addScaledVector(dir, camDist * 2);
     if (state.showLights) {
-      // marker floats between the model and the light, always the same
-      // apparent size, so the arc stays easy to read while zooming
-      light.userData.marker.position.copy(target).addScaledVector(dir, camDist * 1.6);
-      light.userData.marker.scale.setScalar(camDist * 0.035);
+      // marker floats close to the model so every marker stays inside
+      // the camera's view cone; constant apparent size while zooming
+      light.userData.marker.position.copy(target).addScaledVector(dir, camDist * 0.45);
+      light.userData.marker.scale.setScalar(camDist * 0.028);
     }
   }
   if (state.spin) {
@@ -1153,6 +1163,42 @@ el("shape-toggle").addEventListener("change", e => {
 el("lightsvis-toggle").addEventListener("change", e => {
   state.showLights = e.target.checked;
 });
+
+/* Build the light block with the current colors and brightness, ready
+   to paste over the defaults in the source. */
+function lightCode() {
+  const names = ["keyLight", "fillLight", "backLight", "topLight", "bottomLight"];
+  const lines = viewLights.map((light, i) => {
+    const hex = "0x" + light.color.getHexString();
+    const deg = String(light.userData.deg).padStart(4);
+    return "const " + names[i].padEnd(12) + "= arcLight(" + hex + ", " +
+      light.intensity.toFixed(2) + ", " + deg + ");";
+  });
+  return lines.join("\n") +
+    "\n\nconst ATOM_SPECULAR = 0x" + ATOM_SPECULAR.toString(16).padStart(6, "0") + ";\n" +
+    "const ATOM_SHININESS = " + ATOM_SHININESS + ";";
+}
+
+el("copy-lights-btn").addEventListener("click", () => {
+  const code = lightCode();
+  const done = () => { el("copy-lights-btn").textContent = "Copied"; setTimeout(() => el("copy-lights-btn").textContent = "Copy light code", 1500); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(code).then(done, () => fallbackCopy(code, done));
+  } else {
+    fallbackCopy(code, done);
+  }
+});
+
+function fallbackCopy(text, done) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); done(); } catch (err) { showError("The copy failed. Select the text manually."); }
+  document.body.removeChild(ta);
+}
 
 /* two colored lights with adjustable brightness */
 function wireLight(colorId, powerId, light) {
