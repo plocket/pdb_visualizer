@@ -218,6 +218,12 @@
   </div>
 
   <div class="row">
+    <label for="light6-color">Headlamp</label>
+    <input type="color" id="light6-color" value="#fff8e8">
+    <input type="range" id="light6-power" min="0" max="200" value="35">
+  </div>
+
+  <div class="row">
     <label for="spin-toggle">Auto spin</label>
     <input type="checkbox" id="spin-toggle">
   </div>
@@ -473,6 +479,7 @@ function viewerLight(hex, intensity, offset) {
   const light = new THREE.DirectionalLight(hex, intensity);
   light.userData.offset = offset;
   scene.add(light);
+  scene.add(light.target);   // so the aim point can move with the view
   return light;
 }
 const ARC_Z = 0.2;    // slight depth on the viewer's side, so the half circle spreads fully
@@ -490,6 +497,12 @@ const fillLight   = arcLight(0x001eff, 0.20,   45); // upper right
 const backLight   = arcLight(0xff3700, 0.25,   90); // top
 const topLight    = arcLight(0x4dff94, 0.17,  135); // upper left
 const bottomLight = arcLight(0xfba651, 0.11,  180); // far left
+/* Headlamp: a light locked to the view axis, like a miner's lamp.
+   Whatever the camera looks at keeps full brightness, so the inside
+   of the protein stays readable while the arc lights do the color
+   work. Offset (0, 0, 1) is exactly behind the viewer in camera space. */
+const headlamp    = viewerLight(0xfff8e8, 0.35, new THREE.Vector3(0, 0, 1));
+headlamp.userData.noMarker = true;
 /* Slightly shiny surface: a tight, faint highlight reads as sheen. A
    broad highlight with the same strength reads as plastic, so the
    shininess stays high while the specular color stays dark. */
@@ -520,11 +533,12 @@ const HULL_INFLATE = 1.07;
 
 /* Bright markers that show where each light sits. MeshBasicMaterial
    ignores lighting, so the markers glow in the light's own color. */
-const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight];
+const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight, headlamp];
 const markerGeo = new THREE.SphereGeometry(1, 12, 8);
 const markerGroup = new THREE.Group();
 scene.add(markerGroup);
 for (const light of viewLights) {
+  if (light.userData.noMarker) continue;
   const marker = new THREE.Mesh(markerGeo,
     new THREE.MeshBasicMaterial({ color: light.color }));
   markerGroup.add(marker);
@@ -1080,7 +1094,10 @@ function animate(t) {
     const dir = _p.normalize();
     // light sits well behind the camera along its arc direction
     light.position.copy(camera.position).addScaledVector(dir, camDist * 2);
-    if (state.showLights) {
+    // aim every light at the orbit target, so the directions converge on
+    // what the viewer is looking at instead of the world origin
+    light.target.position.copy(target);
+    if (state.showLights && light.userData.marker) {
       // marker floats close to the model so every marker stays inside
       // the camera's view cone; constant apparent size while zooming
       light.userData.marker.position.copy(target).addScaledVector(dir, camDist * 0.45);
@@ -1347,10 +1364,15 @@ el("outline-toggle").addEventListener("change", e => {
 /* Build the light block with the current colors and brightness, ready
    to paste over the defaults in the source. */
 function lightCode() {
-  const names = ["keyLight", "fillLight", "backLight", "topLight", "bottomLight"];
-  const position = [ "// far right", "// upper right", "// top", "// upper left", "// far left" ];
+  const names = ["keyLight", "fillLight", "backLight", "topLight", "bottomLight", "headlamp"];
+  const position = [ "// far right", "// upper right", "// top", "// upper left", "// far left", "// straight ahead" ];
   const lines = viewLights.map((light, i) => {
     const hex = "0x" + light.color.getHexString();
+    if (light.userData.noMarker) {
+      return "const " + names[i].padEnd(12) + "= viewerLight(" + hex + ", " +
+        light.intensity.toFixed(2) + ", new THREE.Vector3(0, 0, 1));" +
+        " " + position[i];
+    }
     const deg = String(light.userData.deg).padStart(4);
     return "const " + names[i].padEnd(12) + "= arcLight(" + hex + ", " +
       light.intensity.toFixed(2) + ", " + deg + ");" +
@@ -1423,6 +1445,7 @@ wireLight("light2-color", "light2-power", fillLight);
 wireLight("light3-color", "light3-power", backLight);
 wireLight("light4-color", "light4-power", topLight);
 wireLight("light5-color", "light5-power", bottomLight);
+wireLight("light6-color", "light6-power", headlamp);
 
 /* Set every panel input from the live values, so the controls always
    start where the code defaults really are, even after edits in source. */
@@ -1433,6 +1456,7 @@ function syncLightUI() {
     ["light3-color", "light3-power", backLight],
     ["light4-color", "light4-power", topLight],
     ["light5-color", "light5-power", bottomLight],
+    ["light6-color", "light6-power", headlamp],
   ];
   for (const [colorId, powerId, light] of rows) {
     el(colorId).value = "#" + light.color.getHexString();
