@@ -279,8 +279,8 @@
   <button id="copy-lights-btn">Copy light code</button>
 
   <div id="view-reset">
-    <button id="reset-zoom-btn">Reset zoom</button>
-    <button id="reset-pan-btn">Reset pan</button>
+    <button id="reset-proximity-btn">Reset proximity</button>
+    <button id="reset-center-btn">Reset center</button>
     <button id="reset-orbit-btn">Reset orbit</button>
   </div>
 
@@ -296,7 +296,7 @@
     <div class="ktitle">Keyboard</div>
     <div class="krow"><span class="kcap">W A S D</span><span>Orbit the view</span></div>
     <div class="krow"><span class="kcap">Arrow keys</span><span>Orbit the view</span></div>
-    <div class="krow"><span class="kcap">+ / -</span><span>Zoom in or out</span></div>
+    <div class="krow"><span class="kcap">+ / -</span><span>Move in or out</span></div>
     <div class="krow"><span class="kcap">I J K L</span><span>Pan the view</span></div>
   </div>
   <button id="open-btn">Open another file</button>
@@ -584,8 +584,11 @@ let target = new THREE.Vector3();
       // own axes, so drag directions stay meaningful at any orientation
       orbitByAngles(dx * 0.006, dy * 0.006);
     } else {
-      // pan in the camera plane
-      const panScale = camera.position.distanceTo(target) * 0.0016;
+      // pan in the camera plane. The speed follows the nearest surface
+      // ahead, not the orbit target, so the content the viewer is next
+      // to moves at the same screen speed everywhere in the model.
+      const anchor = computeDepthAnchor();
+      const panScale = Math.max(anchor.near, state.typDiam * 0.25 || 1) * 0.0016;
       const right = new THREE.Vector3(1, 0, 0).applyQuaternion(viewQuat);
       const up = new THREE.Vector3(0, 1, 0).applyQuaternion(viewQuat);
       target.addScaledVector(right, -dx * panScale);
@@ -598,7 +601,7 @@ let target = new THREE.Vector3();
   });
   dom.addEventListener("wheel", e => {
     e.preventDefault();
-    zoomCamera(Math.pow(1.01, e.deltaY));
+    dollyCamera(Math.pow(1.01, e.deltaY));
   }, { passive: false });
   // touch support: one finger rotate, two finger pinch zoom
   let pinchDist = 0;
@@ -669,7 +672,7 @@ function orbitCamera(dyaw, dpitch) {
   orbitByAngles(dyaw, dpitch);
 }
 
-function zoomCamera(factor) {
+function dollyCamera(factor) {
   const offset = camera.position.clone().sub(target).multiplyScalar(factor);
   // keep the zoom inside a usable range around the fitted view, so the
   // camera can neither dig into a near-zero distance nor fly far away
@@ -703,7 +706,7 @@ function handleKeys() {
   let zf = 1;
   if (keys.has("Equal") || keys.has("NumpadAdd")) zf -= KEY_ZOOM_SPEED;
   if (keys.has("Minus") || keys.has("NumpadSubtract")) zf += KEY_ZOOM_SPEED;
-  if (zf !== 1) zoomCamera(zf);
+  if (zf !== 1) dollyCamera(zf);
 
   let px = 0, py = 0;
   if (keys.has("KeyI")) py += 1;
@@ -1077,6 +1080,33 @@ function centerAndFit() {
   syncViewQuat();
 }
 
+/* Depth of the nearest and farthest atom surface ahead of the camera,
+   along the view direction. A pure function of the current camera
+   state, shared by the depth shading uniforms and the pan speed. */
+const _anchor = { near: 0, far: 0 };
+function computeDepthAnchor() {
+  let near = Infinity, far = -Infinity;
+  if (state.atomRadius) {
+    _dir.copy(target).sub(camera.position).normalize();
+    const cp = camera.position, pos = state.pos, rad = state.atomRadius;
+    for (let i = 0, j = 0; i < rad.length; i++, j += 3) {
+      if (!rad[i]) continue;
+      const z = (pos[j] - cp.x) * _dir.x + (pos[j + 1] - cp.y) * _dir.y +
+        (pos[j + 2] - cp.z) * _dir.z;
+      if (z + rad[i] <= 0) continue;   // whole atom is behind the camera
+      if (z - rad[i] < near) near = z - rad[i];
+      if (z + rad[i] > far) far = z + rad[i];
+    }
+  }
+  if (near === Infinity) {
+    near = camera.position.distanceTo(target);
+    far = near;
+  }
+  _anchor.near = near;
+  _anchor.far = far;
+  return _anchor;
+}
+
 /* ============================================================
    Animation loop
    ============================================================ */
@@ -1090,23 +1120,13 @@ function animate(t) {
   // of the camera, so the depth cue restarts wherever the camera is,
   // including inside the protein. Depth is measured in atom diameters.
   if (state.atomRadius && state.typDiam) {
-    _dir.copy(target).sub(camera.position).normalize();
-    const cp = camera.position, pos = state.pos, rad = state.atomRadius;
-    let near = Infinity, far = -Infinity;
-    for (let i = 0, j = 0; i < rad.length; i++, j += 3) {
-      if (!rad[i]) continue;
-      const z = (pos[j] - cp.x) * _dir.x + (pos[j + 1] - cp.y) * _dir.y +
-        (pos[j + 2] - cp.z) * _dir.z;
-      if (z + rad[i] <= 0) continue;   // whole atom is behind the camera
-      if (z - rad[i] < near) near = z - rad[i];
-      if (z + rad[i] > far) far = z + rad[i];
-    }
-    if (near < Infinity) {
+    const anchor = computeDepthAnchor();
+    if (anchor.near < Infinity) {
       const diam = state.typDiam;
       // span covers only the model depth actually ahead of the camera
-      const span = Math.max(0.5, (far - near) / diam - window.DEPTH_PLATEAU);
+      const span = Math.max(0.5, (anchor.far - anchor.near) / diam - window.DEPTH_PLATEAU);
       for (const shader of depthShaders) {
-        shader.uniforms.uNear.value = near;
+        shader.uniforms.uNear.value = anchor.near;
         shader.uniforms.uDiam.value = diam;
         shader.uniforms.uSpan.value = span;
       }
@@ -1451,7 +1471,7 @@ function cameraDirAndDist() {
   return { dir: dir.normalize(), dist };
 }
 
-el("reset-zoom-btn").addEventListener("click", () => {
+el("reset-proximity-btn").addEventListener("click", () => {
   if (!state.fitDist) return;
   const { dir } = cameraDirAndDist();
   camera.position.copy(target).addScaledVector(dir, state.fitDist);
@@ -1459,7 +1479,7 @@ el("reset-zoom-btn").addEventListener("click", () => {
   syncViewQuat();
 });
 
-el("reset-pan-btn").addEventListener("click", () => {
+el("reset-center-btn").addEventListener("click", () => {
   const { dir, dist } = cameraDirAndDist();
   target.set(0, 0, 0);
   camera.position.copy(target).addScaledVector(dir, dist);
