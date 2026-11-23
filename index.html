@@ -98,6 +98,12 @@
   }
   input[type="range"] { accent-color: var(--accent); }
   input[type="checkbox"] { accent-color: var(--accent); }
+  input[type="color"] {
+    width: 34px; height: 24px; padding: 0 2px;
+    background: var(--panel); border: 1px solid var(--panel-edge);
+    border-radius: 6px; cursor: pointer;
+  }
+  .row input[type="range"] { min-width: 0; }
   button {
     background: var(--panel); color: var(--text);
     border: 1px solid var(--panel-edge); border-radius: 6px;
@@ -176,6 +182,18 @@
   <div class="row">
     <label for="shape-toggle">Shape by element</label>
     <input type="checkbox" id="shape-toggle">
+  </div>
+
+  <div class="row">
+    <label for="light1-color">Light 1 color</label>
+    <input type="color" id="light1-color" value="#ffffff">
+    <input type="range" id="light1-power" min="0" max="200" value="95">
+  </div>
+
+  <div class="row">
+    <label for="light2-color">Light 2 color</label>
+    <input type="color" id="light2-color" value="#7788ff">
+    <input type="range" id="light2-power" min="0" max="200" value="35">
   </div>
 
   <div class="row">
@@ -396,7 +414,7 @@ camera.position.set(0, 0, 60);
 const keyLight = new THREE.DirectionalLight(0xffffff, 0.95);
 keyLight.position.set(1, 1, 1).normalize();
 scene.add(keyLight);
-const fillLight = new THREE.DirectionalLight(0xffffff, 0.35);
+const fillLight = new THREE.DirectionalLight(0x7788ff, 0.35);
 fillLight.position.set(-1, -0.5, -1).normalize();
 scene.add(fillLight);
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
@@ -1053,6 +1071,18 @@ el("shape-toggle").addEventListener("change", e => {
   state.shapeMode = e.target.checked;
   rebuildMolecule();
 });
+
+/* two colored lights with adjustable brightness */
+function wireLight(colorId, powerId, light) {
+  el(colorId).addEventListener("input", e => {
+    light.color.set(e.target.value);
+  });
+  el(powerId).addEventListener("input", e => {
+    light.intensity = parseInt(e.target.value, 10) / 100;
+  });
+}
+wireLight("light1-color", "light1-power", keyLight);
+wireLight("light2-color", "light2-power", fillLight);
 
 /* ============================================================
    Video recording: capture the canvas exactly as the user sees it.
