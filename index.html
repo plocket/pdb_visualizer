@@ -429,20 +429,28 @@ scene.background = new THREE.Color(0x10141a);
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100000);
 camera.position.set(0, 0, 60);
 
-/* Five lights, all on the viewer's side of the model. Offsets are in
-   camera space, so the lights stay behind the viewer while orbiting.
-   Camera space: +x right, +y up, +z toward the viewer. */
+/* Five lights on a semicircular arc around the viewer's view of the
+   model: far right, upper right, top, upper left, far left. All sit
+   on the viewer's side. Offsets are in camera space, so the arc
+   follows the view while orbiting. Camera space: +x right, +y up,
+   +z toward the viewer. */
 function viewerLight(hex, intensity, offset) {
   const light = new THREE.DirectionalLight(hex, intensity);
   light.userData.offset = offset;
   scene.add(light);
   return light;
 }
-const keyLight = viewerLight(0xffffff, 0.95, new THREE.Vector3(1.0, 1.3, 0.7));
-const fillLight = viewerLight(0x7788ff, 0.35, new THREE.Vector3(-1.5, 0.3, 0.6));
-const backLight = viewerLight(0xff8866, 0.25, new THREE.Vector3(0.2, -1.2, 0.7));
-const topLight = viewerLight(0xaaffcc, 0.2, new THREE.Vector3(-0.8, 1.8, 0.3));
-const bottomLight = viewerLight(0xffd4a8, 0.15, new THREE.Vector3(1.0, -1.8, 0.4));
+const ARC_Z = 0.55;   // same depth for every light, on the viewer's side
+function arcLight(hex, intensity, deg) {
+  const a = THREE.MathUtils.degToRad(deg);
+  return viewerLight(hex, intensity,
+    new THREE.Vector3(Math.cos(a), Math.sin(a), ARC_Z));
+}
+const keyLight    = arcLight(0xffffff, 0.95,   0); // far right
+const fillLight   = arcLight(0x7788ff, 0.35,  45); // upper right
+const backLight   = arcLight(0xff8866, 0.25,  90); // top
+const topLight    = arcLight(0xaaffcc, 0.2,  135); // upper left
+const bottomLight = arcLight(0xffd4a8, 0.15, 180); // far left
 const viewLights = [keyLight, fillLight, backLight, topLight, bottomLight];
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
 
