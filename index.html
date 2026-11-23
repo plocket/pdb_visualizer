@@ -1103,6 +1103,24 @@ function computeDepthAnchor() {
       if (z - rad[i] < near) near = z - rad[i];
       if (z + rad[i] > far) far = z + rad[i];
     }
+    // bonds count too: a bond between two distant atoms can pass close
+    // to the camera even when neither end does
+    const pairs = state.bondPairs;
+    if (pairs) {
+      for (let p = 0; p < pairs.length; p += 2) {
+        const a = pairs[p] * 3, b = pairs[p + 1] * 3;
+        const az = (pos[a] - cp.x) * _dir.x + (pos[a + 1] - cp.y) * _dir.y +
+          (pos[a + 2] - cp.z) * _dir.z;
+        const bz = (pos[b] - cp.x) * _dir.x + (pos[b + 1] - cp.y) * _dir.y +
+          (pos[b + 2] - cp.z) * _dir.z;
+        // segment fully behind the camera cannot be ahead of us
+        if (az + bz <= 0) continue;
+        // the segment's depth range along the view direction
+        const segNear = Math.min(az, bz), segFar = Math.max(az, bz);
+        if (segNear < near) near = segNear;
+        if (segFar > far) far = segFar;
+      }
+    }
   }
   if (near === Infinity) {
     near = camera.position.distanceTo(target);
