@@ -203,6 +203,18 @@
   </div>
 
   <div class="row">
+    <label for="light4-color">Light 4 color</label>
+    <input type="color" id="light4-color" value="#aaffcc">
+    <input type="range" id="light4-power" min="0" max="200" value="20">
+  </div>
+
+  <div class="row">
+    <label for="light5-color">Light 5 color</label>
+    <input type="color" id="light5-color" value="#ffd4a8">
+    <input type="range" id="light5-power" min="0" max="200" value="15">
+  </div>
+
+  <div class="row">
     <label for="spin-toggle">Auto spin</label>
     <input type="checkbox" id="spin-toggle">
   </div>
@@ -426,6 +438,12 @@ scene.add(fillLight);
 const backLight = new THREE.DirectionalLight(0xff8866, 0.25);
 backLight.position.set(0.2, -1, -0.6).normalize();
 scene.add(backLight);
+const topLight = new THREE.DirectionalLight(0xaaffcc, 0.2);
+topLight.position.set(0, 1, -0.2).normalize();
+scene.add(topLight);
+const bottomLight = new THREE.DirectionalLight(0xffd4a8, 0.15);
+bottomLight.position.set(0, -1, 0.4).normalize();
+scene.add(bottomLight);
 scene.add(new THREE.AmbientLight(0xffffff, 0.45));
 
 const molGroup = new THREE.Group();
@@ -1093,6 +1111,8 @@ function wireLight(colorId, powerId, light) {
 wireLight("light1-color", "light1-power", keyLight);
 wireLight("light2-color", "light2-power", fillLight);
 wireLight("light3-color", "light3-power", backLight);
+wireLight("light4-color", "light4-power", topLight);
+wireLight("light5-color", "light5-power", bottomLight);
 
 /* ============================================================
    Video recording: capture the canvas exactly as the user sees it.
