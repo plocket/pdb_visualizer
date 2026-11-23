@@ -236,6 +236,11 @@
   </div>
 
   <div class="row">
+    <label for="depth-slider">Depth shading</label>
+    <input type="range" id="depth-slider" min="0" max="100" value="50">
+  </div>
+
+  <div class="row">
     <label for="lightsvis-toggle">Show light positions</label>
     <input type="checkbox" id="lightsvis-toggle" checked>
   </div>
@@ -669,6 +674,7 @@ function atomMaterial(emissive) {
    per-atom CPU work is needed. The strength scales with the camera
    distance, so zooming keeps the same relative depth cue. */
 const DEPTH_DARKEN = 0.5;   // how much darker the deepest surfaces get
+window.DEPTH_DARKEN = DEPTH_DARKEN;   // live copy, moved by the slider
 const depthShaders = [];
 function addDepthShade(mat) {
   mat.onBeforeCompile = shader => {
@@ -1233,6 +1239,16 @@ el("lightsvis-toggle").addEventListener("change", e => {
   state.showLights = e.target.checked;
 });
 
+/* Depth shading slider: rewires the injected shader constant. The
+   shader source is rewritten in place, so no recompiles are needed. */
+el("depth-slider").addEventListener("input", e => {
+  window.DEPTH_DARKEN = parseInt(e.target.value, 10) / 100;
+  for (const shader of depthShaders) {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      /1\.0 - [0-9.]+ \*/, "1.0 - " + window.DEPTH_DARKEN + " *");
+  }
+});
+
 el("outline-toggle").addEventListener("change", e => {
   state.showOutlines = e.target.checked;
   rebuildMolecule();
@@ -1250,7 +1266,9 @@ function lightCode() {
   });
   return lines.join("\n") +
     "\n\nconst ATOM_SPECULAR = 0x" + ATOM_SPECULAR.toString(16).padStart(6, "0") + ";\n" +
-    "const ATOM_SHININESS = " + ATOM_SHININESS + ";";
+    "const ATOM_SHININESS = " + ATOM_SHININESS + ";\n" +
+    "const DEPTH_DARKEN = " + window.DEPTH_DARKEN + ";\n" +
+    "const HULL_INFLATE = " + HULL_INFLATE + ";";
 }
 
 el("copy-lights-btn").addEventListener("click", () => {
@@ -1288,6 +1306,24 @@ wireLight("light2-color", "light2-power", fillLight);
 wireLight("light3-color", "light3-power", backLight);
 wireLight("light4-color", "light4-power", topLight);
 wireLight("light5-color", "light5-power", bottomLight);
+
+/* Set every panel input from the live values, so the controls always
+   start where the code defaults really are, even after edits in source. */
+function syncLightUI() {
+  const rows = [
+    ["light1-color", "light1-power", keyLight],
+    ["light2-color", "light2-power", fillLight],
+    ["light3-color", "light3-power", backLight],
+    ["light4-color", "light4-power", topLight],
+    ["light5-color", "light5-power", bottomLight],
+  ];
+  for (const [colorId, powerId, light] of rows) {
+    el(colorId).value = "#" + light.color.getHexString();
+    el(powerId).value = Math.round(light.intensity * 100);
+  }
+  el("depth-slider").value = Math.round(window.DEPTH_DARKEN * 100);
+}
+syncLightUI();
 
 /* ============================================================
    Video recording: capture the canvas exactly as the user sees it.
